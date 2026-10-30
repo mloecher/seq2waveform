@@ -16,13 +16,15 @@ early and late. Values stay float64.
 ```python
 import seq2waveform as s2w
 
-seq = s2w.Sequence("scan.seq")
-t, gx, gy, gz = seq.gradients_dense(10e-6)        # uniform raster, Hz/m
-t, kx, ky, kz, offsets = seq.adc_kspace_flat()    # every ADC sample, 1/m
-
-dsv = s2w.DsvSet("..._GRX.dsv", "..._GRY.dsv", "..._GRZ.dsv", "..._RFD.dsv", "..._INF.dsv")
-t, kx, ky, kz, offsets = dsv.adc_kspace_flat()    # the same call, the Siemens side
+wf = s2w.load("scan.seq")                         # or a Siemens DSV export directory
+t, gx, gy, gz = wf.gradients_dense(10e-6)         # uniform raster, Hz/m
+t, kx, ky, kz, offsets = wf.adc_kspace_flat()     # every ADC sample, 1/m
 ```
+
+`load` takes either source and reads a `.seq` in `gradient_mode="dsv"`, the one representation the
+two share, so code on top of it does not know which it was handed. The constructors are still
+there when you want the other modes — `Sequence("scan.seq", gradient_mode="pulseq")` is what
+matches Pulseq's own reference `.h5`.
 
 Built with nanobind + scikit-build-core, so the Python type stubs — docstrings and `NDArray`
 annotations included — are regenerated from the compiled module on every build and committed, which

@@ -20,6 +20,17 @@ Every call is some combination of three choices.
 
 Pick one from each and the method name follows. Nothing in the API does anything else.
 
+For the first of those three, reach for `load`:
+
+```python
+wf = s2w.load("scan.seq")             # Sequence, gradient_mode="dsv"
+wf = s2w.load("export_dir/")          # DsvSet, five files found by their suffixes
+wf = s2w.load("export_dir/SimulationProtocol_GRX.dsv")   # or name any one of them
+```
+
+It defaults to the representation both sources share, which is the subject of the
+`gradient_mode` section below and the reason this function exists.
+
 ## The one primitive
 
 `source.sampler()` builds a `Sampler`: the three gradient channels plus their cumulative moments,
@@ -148,12 +159,21 @@ The invariant is checked on real data: `tests/test_invariants.py` asserts that t
 ## The two sources
 
 ```python
-seq = s2w.Sequence("scan.seq", gradient_mode="dsv")
-dsv = s2w.DsvSet(grx, gry, grz, rfd, inf)      # five paths; gamma defaults to SCAN_GAMMA
+wf = s2w.load(src)                             # the usual way: either source, dsv by default
+
+seq = s2w.Sequence("scan.seq", gradient_mode="dsv")   # or name the class yourself
+dsv = s2w.DsvSet(grx, gry, grz, rfd, inf)             # five paths; gamma defaults to SCAN_GAMMA
 ```
 
 A Siemens export is five files per scan, conventionally `*_GRX.dsv`, `*_GRY.dsv`, `*_GRZ.dsv`,
-`*_RFD.dsv` and `*_INF.dsv` in one directory.
+`*_RFD.dsv` and `*_INF.dsv` in one directory, alongside a dozen other channels (`_ADC`, `_CON`,
+`_M0X`, ...) that are ignored. `load` finds the five by suffix, case-insensitively; point it at
+the directory, or at any one of the files when a directory holds more than one export. A `.seq`
+has to be named directly, since finding one file is not a problem worth solving.
+
+Arguments that do not apply to the source named are rejected rather than ignored: `gamma` with a
+`.seq`, or `mode="pulseq"` with a DSV export (which *is* the dsv waveform already). Both fail
+before anything is parsed.
 
 **Shared by both (17):** `gradient`, `gradient_axis_dense`, `gradients_dense`, `sampler`,
 `duration`, `adc_events`, `adc_events_meta`, `adc_specs`, `adc_excitations`,
@@ -225,23 +245,16 @@ k = sm.kspace(ps + 1000, ps[0])      # shifted by exactly 1 ns
 
 Honest answers to "would you rearrange anything", in order of how much they would help.
 
-**1. A single loader, defaulting to `dsv`.** The thing you actually want is "give me this scan in
-the representation both sources share", and that is currently three decisions (which class, which
-mode, finding five files). It would be additive, not a change to anything existing:
+**1. A single loader, defaulting to `dsv`** — done, that is `load` above. It is additive; nothing
+existing changed. `Sequence`'s own default stays `"pulseq"`, because that mode exists to match
+Pulseq's reference `.h5` and is right for what it is for; `load` is where the GIRF-shaped default
+lives instead. That is the safer half of the next item.
 
-```python
-wf = s2w.load("scan.seq")            # Sequence, gradient_mode="dsv"
-wf = s2w.load("path/to/dsv_dir/")    # DsvSet, five files found by their _GRX/_GRY/... suffixes
-wf = s2w.load("scan.seq", mode="pulseq")   # opt back out when comparing against Pulseq's h5
-```
-
-Then downstream code takes a `wf` and never knows which it got, which is the whole GIRF premise.
-
-**2. `gradient_mode` defaults to `"pulseq"`, and for this work that default is wrong.** Every one
-of your call sites passes `gradient_mode='dsv'` explicitly, and forgetting it does not fail — it
-silently changes every axis of every sequence. Two options: flip the default (a breaking change
-for anything that compares against Pulseq's `.h5`, which is what `pulseq` mode is *for*), or leave
-it and let `load()` above carry the right default. The second is safer and gets the same result.
+**2. `gradient_mode` still defaults to `"pulseq"` on the constructor.** Forgetting it there does
+not fail — it silently changes every axis of every sequence. Flipping it would be a breaking
+change for `.h5` comparisons, so the remaining question is only whether to deprecate calling
+`Sequence(...)` directly for this workflow in favour of `load`. Using `load` everywhere settles
+it in practice.
 
 **3. Some names are more parallel than their behaviour.** `adc_gradient_samples()` and
 `adc_kspace()` return the same shape at the same times, so the `_samples` suffix on one of them
