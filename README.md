@@ -51,15 +51,29 @@ pixi run conda-build    # wraps that wheel into a local conda channel under outp
 pixi run test-cpp         # the C++ core, via ctest
 pixi run test-h5          # against Pulseq's own reference .h5, at 1e-4
 pixi run test-invariants  # internal invariants on the real datasets
-pixi run test             # all three
+pixi run test-golden      # every output column against a committed digest
+pixi run test             # all four
 pixi run bench            # timings; see PORTING.md
 ```
 
-`test-h5` is the one that does not depend on this library's own arithmetic being right — the `.h5`
-is written by Pulseq itself — so it is the one to run after changing a waveform.
-`test-invariants` is its complement: it pins this library's paths to *each other* (sorted vs
-unsorted sampling, flat vs per-event k-space, the `.seq` route vs the DSV route), which is what
-catches a change that moves one half of a pair. Neither sees what the other does.
+Three different questions, and none of them answers another:
+
+- **`test-h5` — is it right?** The only check that does not depend on this library's own
+  arithmetic, since the `.h5` is written by Pulseq itself. Run it after changing a waveform. It is
+  a tolerance check (1e-4) on gradients, ADC times and excitation centers.
+- **`test-invariants` — do the paths agree?** Pins this library's routes to *each other*: sorted vs
+  unsorted sampling, batched vs pointwise moments, flat vs per-event k-space, the `.seq` route vs
+  the DSV route. Exact, and what catches a change that moves one half of a pair.
+- **`test-golden` — did anything move?** 97 digested output columns per dataset against
+  `tests/golden/*.json`: triggers, RF event metadata, ADC grouping, the INF and DSV readers, all
+  three gradient modes, and the flat k-space. Bit-exact, and the only check that covers the first
+  four of those on real data at all.
+
+The snapshots hold hashes rather than arrays (the corpus is too big to commit), plus counts,
+statistics and sampled values so a failure says *what* moved. Regenerate them with
+`pixi run golden-update` only when the change in output is intended — a snapshot updated to make a
+red test green is worth less than no snapshot — and review the diff: a one-line change to a reader
+should move one or two columns, not ninety.
 
 ### The test corpus
 

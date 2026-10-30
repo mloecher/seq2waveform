@@ -63,8 +63,15 @@ test-h5 = { cmd = "pytest tests/test_h5.py -v", depends-on = ["build"] }
 # and per-event k-space against each other, the .seq and DSV routes to the same k-space. No
 # external reference, so these catch a refactor that moves one path and not its twin.
 test-invariants = { cmd = "pytest tests/test_invariants.py -v", depends-on = ["build"] }
+# Change detection on the real corpus: every output column against a committed digest. Replaces
+# what the differential suite did in practice -- noticing that a refactor moved a number -- for
+# the quantities nothing else covers on real data (triggers, RF metadata, ADC grouping, the INF
+# and DSV readers, the alternate gradient modes).
+test-golden = { cmd = "pytest tests/test_golden.py -v", depends-on = ["build"] }
+# Rewrite those snapshots. Only when the change in output is intended, and review the diff.
+golden-update = { cmd = "python scripts/gen_golden.py", depends-on = ["build"] }
 # Everything.
-test = { depends-on = ["test-cpp", "test-h5", "test-invariants"] }
+test = { depends-on = ["test-cpp", "test-h5", "test-invariants", "test-golden"] }
 # Timings on the real datasets; see PORTING.md's performance sections.
 bench = { cmd = "python scripts/bench.py", depends-on = ["build"] }
 # A redistributable wheel, for cibuildwheel to do per-platform or for the conda recipe to wrap.

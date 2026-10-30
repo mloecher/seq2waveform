@@ -233,12 +233,20 @@ twice. Caching the expansion would be the largest single win available — but `
 mutable `gradient_mode`, so a cache has to be invalidated on it, and a stale cache returns
 *plausible wrong numbers* rather than failing.
 
-All three share a reason beyond their cost: each one risks silently wrong output (an offset error,
-uninitialised memory, a stale cache), and the differential suite that would have caught that is
-gone. **Land golden-file tests on the corpus first** — see **What the cut-over gave up** — and
-these become ordinary optimisations instead of bets. Until then the honest summary is that this
-library is within 1.2-1.4x of the Rust original on the array-building calls, at parity or ahead on
-parse and `adc_times`, and that is good enough.
+All three shared a reason beyond their cost when they were measured: each risks *silently wrong
+output* rather than a crash — an offset error, uninitialised memory, a stale cache — and at that
+moment the differential suite that would have caught it had just been deleted. That reason has
+since expired. `test-golden` pins all three gradient modes and the flat k-space bit-exactly on the
+corpus, which is precisely the output each of these would corrupt, so they are now ordinary
+optimisations: make the change, run `pixi run test`, and a mistake shows up as a moved column
+rather than as a plausible wrong number.
+
+What has not changed is that none of them is worth much. The two cheap ones are 5% and 8% of one
+call. The caching one is larger but changes the API's contract — nothing is memoised today, which
+is what makes repeated calls honest and the benchmark numbers meaningful — and `Sequence` has a
+mutable `gradient_mode` for a cache to go stale behind. The library is within 1.2-1.4x of the Rust
+original on the array-building calls and at parity or ahead on parse and `adc_times`; that is good
+enough that the right trigger for any of this is a profile of a real workload, not this table.
 
 ## Layout
 
@@ -260,9 +268,13 @@ tests/
   test_pwl.cpp                 C++ core tests (ctest), one per module
   test_h5.py                   against Pulseq's own reference files
   test_invariants.py           our own paths against each other
+  test_golden.py               every output column vs a committed digest
+  golden.py                    the digests, shared by the test and the generator
+  golden/<dataset>.json        the snapshots — regenerate deliberately, review the diff
   bench_expand.cpp             native timings, no Python boundary; also the allocation probes
 scripts/
   bench.py                     timings through the Python API
+  gen_golden.py                rewrites tests/golden/*.json
 recipe.yaml                    wraps a built wheel into a conda package
 ```
 
@@ -280,15 +292,17 @@ pixi run build            # editable install + regenerate _core.pyi
 pixi run test-cpp         # C++ core tests via ctest
 pixi run test-h5          # against Pulseq's own reference .h5, at 1e-4
 pixi run test-invariants  # our own paths against each other, on the real datasets
-pixi run test             # all three
+pixi run test-golden      # every output column against tests/golden/*.json
+pixi run golden-update    # rewrite those snapshots (deliberately — review the diff)
+pixi run test             # all four
 pixi run bench            # timings on the real datasets
 pixi run build-wheel      # dist/*.whl
 pixi run conda-build      # wrap that wheel into a local conda channel under output/
 ```
 
-`test-h5` and `test-invariants` are complements and neither subsumes the other: the first is an
-outside answer but a tolerance one on three quantities, the second is exact but grades this code
-against itself. Run both.
+These answer three different questions and none subsumes another: `test-h5` is an outside answer
+but a tolerance one on three quantities, `test-invariants` is exact but grades this code against
+itself, and `test-golden` is exact on real data but only detects change. Run all of them.
 
 `cmake` and `nanobind` come from the pixi environment; MSVC comes from the system Visual Studio
 install, as in gropt. `ninja` is deliberately **not** a dependency — without it CMake uses the
@@ -657,12 +671,41 @@ left is that strong. In its place:
 - `test-invariants` — exact, but self-referential: it pins paths to each other, not to truth.
 - the C++ unit tests (`tests/test_*.cpp`, 7 ctest suites) — ported from the Rust unit tests, so they
   carry that coverage forward, but they are small fixtures rather than real data.
+- `test-golden` — exact, and on real data, but a snapshot of this code's own output: it detects
+  change, not error. Added right after the cut-over; see below.
 
-The gap is therefore: **anything on real data that only the oracle covered**. Triggers, RF event
-metadata, ADC event grouping after the `MaxAdcSegmentLength` merge, and the INF readers are checked
-on fixtures but no longer on the corpus. If one of those breaks, the current suite is unlikely to
-notice. Adding golden-file tests — snapshot the current output on the corpus and compare — would
-close most of it cheaply, and is the obvious next move if this code is going to keep changing.
+The gap was therefore **anything on real data that only the oracle covered**: triggers, RF event
+metadata, ADC event grouping after the `MaxAdcSegmentLength` merge, and the INF readers, all still
+checked on fixtures but no longer on the corpus.
+
+That gap is now closed by `test-golden`, which is the fourth entry in the list above and the reason
+this section is history rather than a warning:
+
+- `test-golden` — 97 digested output columns per dataset in `tests/golden/*.json`, bit-exact
+  against the corpus. It covers exactly what nothing else did, and it was generated while the code
+  was still the code that had just been proven at parity, so the reference is not re-derived
+  ground truth — it is the output the oracle signed off on.
+
+What a snapshot *cannot* do is tell you a number is right; it only says it has not changed. So the
+shape of the safety net is now: `test-h5` asks whether the waveforms are correct, `test-invariants`
+asks whether the internal routes agree, and `test-golden` asks whether anything moved. Losing the
+oracle cost the ability to answer the first question about triggers, RF metadata, ADC grouping and
+the INF on real data — that part is genuinely gone, and only a new external reference would bring
+it back. What was recoverable has been recovered.
+
+Two details worth knowing before trusting a green `test-golden` run:
+
+- **It is sensitive, and that is checked.** `tests/test_golden.py` carries negative controls that
+  need no corpus: a one-ULP change, a reordering that leaves every statistic identical, a moved
+  NaN, a length change and a string change all have to fail the digest. A further control asserts
+  that `centers` and `dsv` gradient modes differ from `pulseq` *somewhere* in the corpus — they
+  agree exactly on all-trapezoid sequences by design, so without that check 12 of the 18 gradient
+  columns could quietly be pinning nothing.
+- **It is bit-exact, which is a platform claim.** The snapshots were written by MSVC on x86-64. A
+  different compiler may contract a multiply-add differently and shift the last bit. Run with
+  `S2W_GOLDEN_RTOL=1e-12` on first contact with a new platform: a pass says the difference is
+  float noise, and the snapshots can be regenerated there. That fallback only sees the statistics
+  and the probes, so it is for platform bring-up, not for everyday use.
 
 ## Conventions for the C++ side
 
