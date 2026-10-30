@@ -1,0 +1,66 @@
+# The full wheel matrix: CPython 3.10-3.14 on Linux x86_64, macOS (both architectures) and
+# Windows x64. See `[tool.cibuildwheel]` in pyproject.toml for the build selection, the skips and
+# the per-architecture macOS deployment targets.
+#
+# Not on every push, deliberately. It is fifteen-odd builds per platform and takes tens of
+# minutes, while `core` and `package` in ci.yml already compile the core and the bindings on all
+# three toolchains within a few minutes of a commit. Run this from the Actions tab when the matrix
+# itself is what you want to check -- which includes the first time this is pushed, since no
+# non-Windows compiler has ever built this code -- and on a release tag.
+#
+# macOS x86_64 is cross-compiled from the Apple Silicon runner. Two consequences: CMakeLists.txt
+# skips stub generation for that build (it cannot import a foreign-architecture module), and
+# cibuildwheel skips `test-command` for it, so an x86_64 wheel is checked to build and not to run.
+#
+# To add Linux aarch64, add `ubuntu-24.04-arm` to the matrix -- free for public repositories.
+
+name: Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned rather than floating: a cibuildwheel bump changes which interpreters and platform
+      # tags come out, which is a release decision. Bump it deliberately.
+      - uses: pypa/cibuildwheel@v4.3.5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  collect:
+    name: collect
+    needs: wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: wheelhouse
+      - name: What was built
+        run: ls -lh wheelhouse/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-all
+          path: wheelhouse/*.whl
+
+  # Publishing is not wired up: this project installs from a local conda channel built by
+  # `pixi run conda-build` (see recipe.yaml), not from PyPI. If that changes, add a job here
+  # gated on the release tag, using a trusted-publishing `id-token: write` permission and
+  # pypa/gh-action-pypi-publish with the `wheels-all` artifact -- and never a long-lived token.

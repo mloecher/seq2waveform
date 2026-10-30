@@ -1,0 +1,116 @@
+# Every push and pull request. Fast enough to be worth waiting for: the C++ core on three
+# toolchains, the bindings compiled on each of them, and the tests that need no corpus.
+#
+# What this cannot check: almost all of the test suite. The corpus is ~1.6 GB of matched
+# `.seq` / `.h5` / `.dsv` files, gitignored and nowhere near a runner, so `test-h5`,
+# `test-invariants` and the per-dataset half of `test-golden` all skip here. That is 70-odd tests,
+# including every comparison against Pulseq's reference `.h5` and every golden snapshot. **A green
+# run here is not the same as a green `pixi run test` on a machine that has the corpus**, and the
+# corpus-bearing suites remain the real gate before a release. The `-m no_corpus` selection below
+# is what keeps this from quietly becoming a no-op: pytest exits 5 when a selection matches
+# nothing, so if those tests are renamed or lose their marker, this fails rather than passing
+# vacuously.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    # The C++ core and its ctest suites, with no Python anywhere -- that is what
+    # `S2W_BUILD_MODULE=OFF` is for. Compiler errors in the core land here, with the core's own
+    # error messages rather than filtered through a wheel build.
+    name: core / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, name: linux-gcc }
+          - { os: macos-latest, name: macos-clang } # Apple Silicon; macos-13 would add Intel
+          - { os: windows-latest, name: windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+  package:
+    # Compiles the bindings (nanobind, and the stub generation that imports the built module) and
+    # runs what can run. 3.10 is the floor the wheels claim; 3.13 is the one everything else uses.
+    name: package / ${{ matrix.os }} py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: macos-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install . pytest numpy
+      - name: Tests that need no corpus
+        run: pytest tests -m no_corpus -v
+      - name: Report what skipped for want of a corpus
+        # Informational, and deliberately not a gate: it prints the skip reasons so the log says
+        # plainly which checks did not run here.
+        continue-on-error: true
+        run: pytest tests -m "not no_corpus" -rs -q
+      - name: Import and compute from outside the source tree
+        # From a different directory, so this exercises the installed package rather than the
+        # repository's own `seq2waveform/`, which would shadow it.
+        working-directory: ${{ runner.temp }}
+        run: >
+          python -c "import numpy as np, seq2waveform as s;
+          w = s.PiecewiseLinear(np.array([0.0, 1.0]), np.array([0.0, 2.0]));
+          assert w.value_at(0.5) == 1.0;
+          print('ok, gamma =', s.SCAN_GAMMA)"
+
+  sdist:
+    # The sdist has to be self-contained: fast_float is vendored under `extern/` precisely so that
+    # a source build, and conda's offline build phase, need no network for it.
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: |
+          python -m pip install build
+          python -m build --sdist
+      - name: It must carry the vendored sources
+        run: |
+          python - <<'EOF'
+          import glob, tarfile
+          names = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
+          for need in ("extern/fast_float/fast_float.h", "CMakeLists.txt", "src/waveform.cpp"):
+              assert any(n.endswith(need) for n in names), f"sdist is missing {need}"
+          print(f"{len(names)} files, vendored fast_float present")
+          EOF
+      - name: Build and install from the sdist alone
+        run: python -m pip install dist/*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

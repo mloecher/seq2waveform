@@ -77,6 +77,7 @@ def test_output_matches_the_committed_snapshot(name):
 
 @pytest.mark.skipif(not COMMITTED, reason="no snapshots committed")
 @pytest.mark.parametrize("mode", ["centers", "dsv"])
+@pytest.mark.no_corpus
 def test_each_gradient_mode_differs_from_pulseq_somewhere(mode):
     """The snapshots carry all three gradient modes; this checks that is worth the bytes.
 
@@ -126,6 +127,7 @@ def _differs(a, b, **kw):
     return compare("probe", digest(a), digest(b), **kw)
 
 
+@pytest.mark.no_corpus
 def test_a_one_ulp_change_is_caught():
     a = np.linspace(0.0, 1.0, 1000)
     b = a.copy()
@@ -133,6 +135,7 @@ def test_a_one_ulp_change_is_caught():
     assert _differs(a, b) is not None
 
 
+@pytest.mark.no_corpus
 def test_a_reordering_is_caught():
     """Sum, min and max all survive a swap; the hash is what notices."""
     a = np.linspace(0.0, 1.0, 1000)
@@ -141,11 +144,13 @@ def test_a_reordering_is_caught():
     assert _differs(a, b) is not None
 
 
+@pytest.mark.no_corpus
 def test_a_length_change_is_caught():
     a = np.arange(10, dtype=np.int64)
     assert _differs(a, a[:-1]) is not None
 
 
+@pytest.mark.no_corpus
 def test_a_moved_nan_is_caught():
     """NaN payload bits are canonicalised away, so only the positions can be compared."""
     a = np.array([np.nan, 1.0, 2.0])
@@ -153,16 +158,19 @@ def test_a_moved_nan_is_caught():
     assert _differs(a, b) is not None
 
 
+@pytest.mark.no_corpus
 def test_nan_becoming_a_number_is_caught():
     a = np.array([np.nan, 1.0])
     b = np.array([0.0, 1.0])
     assert _differs(a, b) is not None
 
 
+@pytest.mark.no_corpus
 def test_a_string_change_is_caught():
     assert _differs(["excitation", "refocusing"], ["excitation", "excitation"]) is not None
 
 
+@pytest.mark.no_corpus
 def test_identical_input_passes():
     a = np.linspace(-3.0, 7.0, 500)
     a[7] = np.nan
@@ -170,6 +178,7 @@ def test_identical_input_passes():
     assert _differs(["a", "b"], ["a", "b"]) is None
 
 
+@pytest.mark.no_corpus
 def test_the_rtol_escape_hatch_accepts_float_noise_but_not_a_real_change():
     """What a macOS run would use: 1-ULP compiler differences pass, a real change still fails."""
     a = np.linspace(1.0, 2.0, 1000)

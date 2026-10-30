@@ -334,7 +334,17 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
         return false;  // empty gradient
     }
 
-    const ArbitraryGrad& a = std::get<ArbitraryGrad>(g);
+    // `get_if` rather than `get`, which is the only call in the library that could throw
+    // `bad_variant_access`. That exception's `what()` lives in the platform's libc++ dylib on
+    // macOS, so the throwing form is availability-annotated and a deployment target below 10.14
+    // either fails to compile or aborts instead of throwing. Nothing here needs it: the variant
+    // has two alternatives and the `Trap` one returned above, so the null branch is unreachable
+    // and `false` -- "this event contributes nothing" -- is the right answer if it ever is not.
+    const ArbitraryGrad* arb = std::get_if<ArbitraryGrad>(&g);
+    if (arb == nullptr) {
+        return false;
+    }
+    const ArbitraryGrad& a = *arb;
     const auto amp_it = seq.shapes.find(a.amp_shape);
     if (amp_it == seq.shapes.end()) {
         return false;  // Rust's `?` on the shape lookup

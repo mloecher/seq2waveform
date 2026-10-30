@@ -307,6 +307,54 @@ Two more, found in this pass and left alone deliberately:
 
 The right trigger for any of these is a profile of a real workload, not this table.
 
+## Continuous integration
+
+Two workflows under `.github/workflows/`.
+
+`ci.yml`, on every push and pull request, in about five minutes:
+
+| job | what it proves |
+|---|---|
+| `core` (linux-gcc, macos-clang, windows-msvc) | the core library compiles and its 7 ctest suites pass on three toolchains, with no Python involved (`-DS2W_BUILD_MODULE=OFF`) |
+| `package` (3 platforms, 3.10 and 3.13) | the bindings compile, nanobind's stub generation runs, the wheel installs, and it imports and computes from outside the source tree |
+| `sdist` | the sdist carries `extern/fast_float`, and builds and installs from source alone |
+
+`wheels.yml`, on a `v*` tag or from the Actions tab: the full cibuildwheel matrix, 25 wheels —
+CPython 3.10 to 3.14 on Linux x86_64, macOS x86_64 and arm64, and Windows x64. It is not on every
+push because it takes tens of minutes and `core` plus `package` already catch a toolchain break;
+run it by hand the first time, since **no non-Windows compiler has ever built this code**.
+
+**What CI cannot check, which is most of the suite.** The corpus is ~1.6 GB and lives nowhere near
+a runner, so `test-h5`, `test-invariants` and the per-dataset half of `test-golden` all skip there
+— roughly seventy tests, including every comparison against Pulseq's reference `.h5` and every
+golden snapshot. A green CI run is **not** equivalent to a green `pixi run test` on a machine that
+has the corpus, and it is the corpus-bearing suites that gate a release. What does run is the
+`no_corpus` marker: the digest machinery's own negative controls and the check that the gradient
+modes differ somewhere, which need only the committed snapshots. `pytest` exits 5 on a selection
+that matches nothing, so if those tests are renamed or lose the marker the job fails rather than
+passing vacuously — the one guard that stops "everything skipped" from reading as success.
+
+### macOS specifics, since that is the untested platform
+
+- **Deployment targets are per-architecture**, via two `[[tool.cibuildwheel.overrides]]` blocks:
+  11.0 for arm64, because that is when the architecture appeared and a lower value tags a wheel
+  for a system that cannot run it, and 10.14 for x86_64. The second is about the C++17 library
+  exceptions that live in the platform's libc++ dylib rather than in a header —
+  `bad_variant_access` and its siblings are availability-annotated, and below 10.14 a throwing
+  `std::get` on a variant either fails to compile or aborts instead of throwing.
+- **Nothing throws one any more.** `build_grad_piece` was the only call that could, and it now
+  uses `std::get_if`, which is header-only and unconditionally available. The variant has two
+  alternatives and the `Trap` one returns earlier, so the null branch is unreachable.
+- **x86_64 is cross-compiled** from the Apple Silicon runner. `CMakeLists.txt` already skips stub
+  generation when `CMAKE_OSX_ARCHITECTURES` differs from `uname -m`, because it cannot import a
+  foreign-architecture module; cibuildwheel likewise skips `test-command` for that wheel. So an
+  x86_64 wheel is checked to *build*, not to run.
+- **On first contact, expect the golden snapshots to be the open question.** They are bit-exact
+  and were written by MSVC on x86-64; a different compiler may contract a multiply-add differently
+  and move the last bit. Run with `S2W_GOLDEN_RTOL=1e-12` on a machine with the corpus: a pass
+  says the difference is float noise and the snapshots can be regenerated there. That fallback
+  only sees the statistics and the probes, so it is for bring-up, not everyday use.
+
 ## Layout
 
 ```
@@ -334,6 +382,9 @@ tests/
 scripts/
   bench.py                     timings through the Python API
   gen_golden.py                rewrites tests/golden/*.json
+.github/workflows/
+  ci.yml                       core + bindings on 3 toolchains, every push
+  wheels.yml                   the full cibuildwheel matrix, on a tag or by hand
 recipe.yaml                    wraps a built wheel into a conda package
 ```
 
@@ -684,6 +735,11 @@ C++-specific, added by the port:
    and only flags `result_out_of_range`, so accepting that code matches Rust exactly.
 7. ~~**`parse_model` / `parse_shapes` exist purely for parity testing.**~~ Closed: both were
    deleted at cut-over, along with the row type aliases they needed (128 lines of bindings).
+8. ~~**`-DS2W_BUILD_TESTS=ON` required Python and nanobind**~~ although the pure-C++ tests link
+   neither — `find_package(Python)` and the module target were unconditional. Closed by
+   `S2W_BUILD_MODULE`, which defaults to ON (every `pip install` builds the module) and OFF builds
+   the core library and its ctest suites alone. That is what `pixi run test-cpp` and the CI `core`
+   job now use, so a compiler error in the core arrives without a Python stack in the way.
 
 ## How the port went, step by step
 

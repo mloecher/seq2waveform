@@ -22,7 +22,27 @@ test-command = "python -c \"import numpy as np, seq2waveform as s; w = s.Piecewi
 
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "10.13" }
+
+# Per-arch deployment targets, because one value cannot be right for both: arm64 did not exist
+# before 11.0, and setting a lower target for it produces a wheel tagged for a system that cannot
+# run it. 10.14 rather than 10.13 on Intel because the C++17 library exceptions that live in the
+# platform's libc++ dylib (bad_variant_access and friends) are annotated as introduced there --
+# nothing here throws one any more, but the margin is free and the OS is from 2018.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.14" }
+
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_arm64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+[tool.pytest.ini_options]
+markers = [
+  # Tests that need no test corpus, so they run anywhere -- a fresh clone, an unpacked sdist, CI.
+  # `pytest -m no_corpus` exits 5 ("no tests collected") if the selection ever matches nothing,
+  # which is what keeps a green CI run from meaning "everything skipped".
+  "no_corpus: runs without the test corpus",
+]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -53,8 +73,10 @@ S2W_TESTDATA = "testdata"
 # Editable install. Also regenerates seq2waveform/_core.pyi from the built module, so the stubs
 # can never drift from the bindings.
 build = "python -m pip install --no-build-isolation -e ."
-# C++ core tests (ported from the Rust unit tests) via ctest.
-test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
+# C++ core tests (ported from the Rust unit tests) via ctest. S2W_BUILD_MODULE=OFF so this
+# needs neither Python nor nanobind and does not rebuild the bindings -- `build` owns those,
+# and every other test task depends on it.
+test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
 # Ground truth: the waveforms against Pulseq's own reference h5, at 1e-4. This is the check that
 # does not depend on our own arithmetic being right, so it is the one to run after touching a
 # waveform.
