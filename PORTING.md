@@ -30,9 +30,12 @@ Built and verified:
 - `src/include/seq2waveform/pwl.hpp`, `src/pwl.cpp` — `PiecewiseLinear`: `value_at`,
   `sample_at`, `sample_at_sorted`, `integral`, `cumulative_moment`, `moment_to`,
   `moments_at_sorted`. Ported line-for-line from `crates/seq2waveform/src/pwl.rs`.
-- `src/include/seq2waveform/scan.hpp`, `src/scan.cpp` — `trim`, `fields`, `parse_f64`,
-  `parse_u32`, `parse_usize`, `saturating_i64`. Reproduces Rust's `str::parse` semantics; see
-  **Scanning numbers**.
+- `src/include/seq2waveform/scan.hpp`, `src/scan.cpp` — `trim`, `fields`, `split_first_space`,
+  `parse_f64`, `parse_u32`, `parse_usize`, `saturating_i64`. Reproduces Rust's `str::parse`
+  semantics; see **Scanning numbers**.
+- `extern/fast_float/` — vendored fast_float 8.1.0 (MIT), supplying `from_chars` for doubles.
+  Build with `-DS2W_USE_SYSTEM_FAST_FLOAT=ON` to unbundle. Its README explains why it is a copy
+  rather than a `FetchContent`.
 - `src/include/seq2waveform/error.hpp` — `ParseError`, carrying the 1-based source line and
   formatting `what()` exactly as Rust's `Display` does.
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
@@ -46,8 +49,34 @@ Built and verified:
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
   41 of them as of step 2; it compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed shape
   samples across the five datasets, all exactly equal.
+- `tests/bench_scan.cpp` — guards the vendored fast_float: asserts it returns identical *bit
+  patterns* to this toolchain's `std::from_chars` for every `[SHAPES]` token (1,289,657 of
+  1,289,657 across the datasets), and times both. Run it after bumping the vendored version:
+  `cmake --build build-tests --config Release --target bench_scan`, then pass it a `.seq` path.
 
 Not started: waveform expansion, sampler, DSV, INF. See **Port order**.
+
+### Parsing performance, measured
+
+Worth knowing before optimising anything else, and worth re-checking when the reader changes.
+`parse_text` on `cones` (1.25 M tokens, 21,140 blocks), best of 9, release:
+
+| | cones parse | vs Rust (end to end) |
+|---|---|---|
+| `std::getline` + `std::from_chars` | 156.8 ms | 0.45x — **2.2x slower** |
+| fast_float only | ~137 ms | ~0.55x |
+| fast_float + in-place line split | **62.8 ms** | **1.08x — at parity** |
+
+Two lessons. **Line reading dominated, not number parsing**: `std::getline` allocates and copies a
+`std::string` per line, which on 1.25 M lines cost more than all the float scanning put together.
+`parse_text` now walks the buffer with `string_view` and `find('\n')`, and `parse(std::istream&)`
+slurps in 64 KiB blocks and delegates to it. Float scanning went from 30% of parse time to 45%
+*because the rest got so much faster*. **And always check the oracle's build profile**: an early
+measurement put the port 2.5x *ahead* of Rust, which was nonsense — `maturin develop` had built a
+debug oracle. Release Rust is a genuinely fast baseline.
+
+The remaining ~35 ms on `cones` is `trim`/`starts_with`/dispatch per line plus the `std::map`
+inserts. Not obviously worth chasing; the h5-comparison work in step 3 will dwarf it.
 
 ## Layout
 
@@ -191,12 +220,20 @@ C++-specific, and learned the hard way in step 2: Rust gets all of this from `st
 of it is visible in the Rust source. `src/scan.cpp` reproduces it, and `tests/test_parser.cpp`
 pins it.
 
-- **Use `std::from_chars`, never `strtod`.** `strtod` honours the C locale's decimal separator, so
-  under a comma locale it reads `1e-05` as `1`. `from_chars` is locale-independent and correctly
-  rounded. (This is why the build requires floating-point `from_chars`; see **Known gaps**.)
+- **Never `strtod`.** It honours the C locale's decimal separator, so under a comma locale it reads
+  `1e-05` as `1`. `from_chars` and fast_float are both locale-independent and correctly rounded.
+- **Doubles go through vendored fast_float, integers through `std::from_chars`.** Integer
+  `from_chars` is everywhere (libc++ since LLVM 7); the floating-point overload only reached libc++
+  in 2025, and Xcode's copy lags, which would break the macOS wheels. fast_float needs only C++11,
+  is what libstdc++ already uses for `from_chars`, and is the same Eisel-Lemire algorithm Rust's
+  `dec2flt` was rewritten to use — so the two readers parse floats identically by construction.
+  `extern/fast_float/README.md` has the provenance; `tests/bench_scan.cpp` is the guard.
 - **The whole token must be consumed.** Rust's `parse()` rejects trailing characters, so `1.5x` is
-  a failure, not `1.5`. `from_chars` reports where it stopped — compare that against the end.
-- **A leading `+` has to be stripped by hand.** Rust accepts `+1.5`; `from_chars` rejects it.
+  a failure, not `1.5`. Both parsers report where they stopped — compare that against the end.
+- **A leading `+` has to be stripped by hand.** Rust accepts `+1.5`; both parsers reject it.
+- **`result_out_of_range` is accepted, not rejected.** fast_float has already saturated the value
+  to ±inf or ±0, which is what Rust returns for `1e999` / `1e-999`. Treating it as an error would
+  reintroduce a divergence for no gain.
 - **Float-to-int casts need `saturating_i64`.** Rust's `as i64` saturates and maps NaN to `0`; the
   C++ cast is undefined outside the range. The shape repeat count is the one place it is reachable
   from file data.
@@ -314,16 +351,18 @@ Decide on each rather than porting the silence (from the Rust repo's `TODO.md`):
 
 C++-specific, added by the port:
 
-5. **Floating-point `std::from_chars` is required** (MSVC 19.24+, libstdc++ 11+, libc++ 20+).
-   `src/scan.cpp` raises a `#error` if it is missing, which an older Apple Clang will be. Only
-   win-64 is built today; this will surface the first time the macOS cibuildwheel targets run, and
-   the fix is either a newer toolchain or a hand-written fallback — *not* `strtod`, which is
-   locale-dependent.
-6. **An out-of-range numeric token fails to parse** where Rust saturates: `1e999` is `inf` in Rust
-   and an error here. Unreachable in Pulseq data, and noted only so it is not mistaken for a bug.
+5. ~~**Floating-point `std::from_chars` is required.**~~ Closed by vendoring fast_float, which
+   needs only C++11. The gap was real: libc++ shipped the floating-point overload in 2025 and
+   Xcode's copy trails upstream, so the macOS wheels would have failed on their first CI run.
+6. ~~**An out-of-range numeric token fails to parse.**~~ Closed too: fast_float saturates the value
+   and only flags `result_out_of_range`, so accepting that code matches Rust exactly.
 7. **`parse_model` / `parse_shapes` exist on both sides purely for parity testing** — the Rust
    bindings had no model-level oracle beyond a block count. Neither is re-exported from its
    package. Delete both at cut-over.
+8. **`maturin develop` builds the oracle in debug** (`build-oracle` passes no `--release`). Float
+   results are identical either way — Rust applies no fast-math — but the parity suite runs in
+   ~4.7 s against a release oracle versus ~17 s against a debug one. Debug buys only integer
+   overflow checks. Worth switching if the test loop ever feels slow.
 
 ## Port order
 
@@ -368,6 +407,12 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
 - **All number and token scanning goes through `seq2waveform/scan.hpp`.** One place that matches
   Rust's parsing rules is the only way the two readers agree; a stray `std::stod` or `atof` would
   reintroduce locale dependence and partial parses. The `.dsv` and `.inf` readers reuse it.
+- **Read text with `parse_text`-style in-place splitting, never `std::getline` per line.** See
+  **Parsing performance** — it was a 2.5x difference on the largest dataset. The `.dsv` and `.inf`
+  readers should take the same shape.
+- **Any new third-party dependency gets vendored under `extern/`**, with a README recording its
+  version, where the bytes came from and its licence. The wheels, the sdist and the conda recipe
+  all have to build with no network.
 - **Never hand-edit `seq2waveform_cpp/_core.pyi`.** It is regenerated on every build.
 
 ---

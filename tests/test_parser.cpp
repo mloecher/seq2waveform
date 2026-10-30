@@ -245,6 +245,13 @@ void scanning_matches_rust_parse() {
     check(!s2w::parse_f64("x", d), "a non-number fails");
     check(!s2w::parse_f64(" 1.5", d), "untrimmed input fails (callers trim first)");
 
+    // Out of range. Rust saturates: "1e999" parses to +inf, "1e-999" to 0.0. The three standard
+    // libraries all disagree here (WG21 P4168 exists because of it), which is part of why doubles
+    // go through fast_float instead.
+    check(s2w::parse_f64("1e999", d) && std::isinf(d) && d > 0, "overflow saturates to +inf");
+    check(s2w::parse_f64("-1e999", d) && std::isinf(d) && d < 0, "overflow saturates to -inf");
+    check(s2w::parse_f64("1e-999", d) && d == 0.0, "underflow saturates to 0");
+
     std::uint32_t u = 0;
     check(s2w::parse_u32("20000", u) && u == 20000, "plain integer");
     check(s2w::parse_u32("+7", u) && u == 7, "a leading + is accepted");

@@ -4,10 +4,7 @@
 #include <cmath>
 #include <limits>
 
-#if !defined(__cpp_lib_to_chars) || __cpp_lib_to_chars < 201611L
-#error "seq2waveform needs std::from_chars for floating point (C++17 <charconv>): MSVC 19.24+, \
-libstdc++ 11+ or libc++ 20+. Older Apple Clang lacks it -- see PORTING.md, Known gaps."
-#endif
+#include <fast_float/fast_float.h>
 
 namespace s2w {
 namespace {
@@ -17,10 +14,14 @@ constexpr bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
-/// Parse the whole of `s` as `T`, Rust-style: a leading '+' is allowed, trailing characters are
-/// not, and an out-of-range value fails.
+/// Parse the whole of `s` as an integer, Rust-style: a leading '+' is allowed, trailing characters
+/// are not, and an out-of-range value fails.
+///
+/// Integer `from_chars` is present in every standard library we build against (libc++ since LLVM
+/// 7); it is only the floating-point overload that is recent, which is why `parse_f64` below does
+/// not use it.
 template <typename T>
-bool parse_whole(std::string_view s, T& out) {
+bool parse_whole_int(std::string_view s, T& out) {
     if (!s.empty() && s.front() == '+') {
         s.remove_prefix(1);  // from_chars rejects it, Rust's parse() does not
     }
@@ -81,15 +82,28 @@ std::pair<std::string_view, std::string_view> split_first_space(std::string_view
 }
 
 bool parse_f64(std::string_view s, double& out) {
-    return parse_whole(s, out);
+    if (!s.empty() && s.front() == '+') {
+        s.remove_prefix(1);  // fast_float forbids it, as std::from_chars does; Rust accepts it
+    }
+    const char* end = s.data() + s.size();
+    double value = 0.0;
+    const fast_float::from_chars_result r = fast_float::from_chars(s.data(), end, value);
+    // `result_out_of_range` is not treated as a failure: fast_float has already saturated `value`
+    // to +/-inf or +/-0, which is exactly what Rust's parse() returns for "1e999" / "1e-999".
+    // Accepting it is what makes the two readers agree on every input rather than most of them.
+    if ((r.ec != std::errc() && r.ec != std::errc::result_out_of_range) || r.ptr != end) {
+        return false;  // empty, malformed, or trailing characters
+    }
+    out = value;
+    return true;
 }
 
 bool parse_u32(std::string_view s, std::uint32_t& out) {
-    return parse_whole(s, out);
+    return parse_whole_int(s, out);
 }
 
 bool parse_usize(std::string_view s, std::size_t& out) {
-    return parse_whole(s, out);
+    return parse_whole_int(s, out);
 }
 
 std::int64_t saturating_i64(double x) {

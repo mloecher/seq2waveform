@@ -8,8 +8,8 @@ annotations included) are regenerated from the compiled module on every build.
 
 **Status: early.** The time type, the piecewise-linear core and the Pulseq `.seq` reader are
 ported and verified bit-exact against the Rust implementation — 41 differential tests covering
-every event library, every shape and the parse-error messages. Waveform expansion, the sampler and
-the DSV/INF readers are not started.
+every event library, every shape and the parse-error messages. Parsing runs at parity with the
+Rust version. Waveform expansion, the sampler and the DSV/INF readers are not started.
 
 ## Build and test
 
@@ -21,7 +21,8 @@ pixi run test           # both
 ```
 
 Requires a system Visual Studio (MSVC) install on Windows; `cmake` and `nanobind` come from the
-pixi environment.
+pixi environment. The one third-party dependency, [fast_float](extern/fast_float/README.md), is
+vendored so that wheels, the sdist and a downstream conda recipe all build without network access.
 
 ## The Rust repo is still required
 

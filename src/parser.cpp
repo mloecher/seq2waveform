@@ -371,17 +371,26 @@ void dispatch(Section section, std::string_view t, Sequence& seq, std::vector<Ra
 
 }  // namespace
 
-Sequence parse(std::istream& in) {
+Sequence parse_text(std::string_view text) {
     Sequence seq;
     Section section = Section::None;
     std::vector<RawBlock> raw_blocks;
     std::optional<PendingShape> cur_shape;
 
-    std::string raw;
     // 1-based, and it counts blank and comment lines too -- Rust enumerates before skipping them,
     // so this is what makes an error point at the same line from either port.
     std::size_t line = 0;
-    while (std::getline(in, raw)) {
+    // Split on '\n' in place rather than with std::getline, which allocates and copies a
+    // std::string per line -- on a large sequence that is over a million allocations, and it
+    // dominated the parse. The segmentation matches both getline and Rust's `lines()`: a trailing
+    // newline does not yield a final empty line, and a final line without one still counts.
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::size_t stop = nl == std::string_view::npos ? text.size() : nl;
+        const std::string_view raw = text.substr(pos, stop - pos);
+        pos = nl == std::string_view::npos ? text.size() : nl + 1;
+
         ++line;
         const std::string_view t = trim(raw);  // also drops a CRLF '\r'
         if (t.empty() || t.front() == '#') {
@@ -422,9 +431,20 @@ Sequence parse(std::istream& in) {
     return seq;
 }
 
+Sequence parse(std::istream& in) {
+    // Read the whole stream in 64 KiB blocks, then parse in place. Sequence files are a few tens
+    // of MB at most, and holding one costs far less than a per-line allocation.
+    std::string text;
+    char buf[1 << 16];
+    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
+        text.append(buf, static_cast<std::size_t>(in.gcount()));
+    }
+    return parse_text(text);
+}
+
 Sequence parse_file(const std::string& path) {
-    // Binary mode: the trim above removes a CRLF '\r' anyway, and this keeps the byte stream the
-    // same on every platform.
+    // Binary mode: trim removes a CRLF '\r' anyway, and this keeps the byte stream identical on
+    // every platform.
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         throw std::runtime_error("I/O error: cannot open " + path);

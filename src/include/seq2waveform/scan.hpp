@@ -7,9 +7,17 @@
 //
 // * The whole token must be consumed. "1.5x" is a failure, not 1.5 -- Rust's parse() rejects
 //   trailing characters, where C's strtod would quietly stop early.
-// * A leading '+' is accepted. Rust accepts it; `std::from_chars` does not, so it is stripped.
-// * Rounding is correctly rounded and locale-independent. `strtod` honours the C locale's decimal
-//   separator, so under a comma locale it would read "1e-05" as 1 -- `from_chars` never does.
+// * A leading '+' is accepted. Rust accepts it; `from_chars` does not, so it is stripped.
+// * Rounding is correct and locale-independent. `strtod` honours the C locale's decimal separator,
+//   so under a comma locale it would read "1e-05" as 1 -- `from_chars` never does.
+//
+// Doubles go through vendored fast_float rather than `std::from_chars` (integers still use the
+// standard one). Three reasons, in `extern/fast_float/README.md`: libc++ only gained the
+// floating-point overload in 2025 and Xcode's copy lags, which would break macOS wheels; the three
+// standard libraries disagree with each other on out-of-range input; and Rust's own `dec2flt` is
+// this same Eisel-Lemire algorithm, so the port and the oracle now parse floats identically by
+// construction rather than by coincidence. Correct rounding is a uniqueness guarantee -- there is
+// exactly one nearest double -- and `tests/bench_scan.cpp` confirms it empirically.
 
 #pragma once
 
@@ -41,9 +49,6 @@ std::pair<std::string_view, std::string_view> split_first_space(std::string_view
 
 /// Parse the whole of `s` as a double, leaving `out` untouched and returning false if it is not a
 /// complete valid number.
-///
-/// One divergence from Rust, unreachable in real data: a token that overflows or underflows the
-/// double range ("1e999") fails here, where Rust saturates to infinity or zero.
 bool parse_f64(std::string_view s, double& out);
 
 /// Parse the whole of `s` as a u32 -- Rust's `parse::<u32>()`. Rejects a `-` sign, a decimal
