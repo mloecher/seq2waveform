@@ -80,6 +80,26 @@ int main(int argc, char** argv) {
         std::printf("adc_specs():       %8.1f ms  (%zu events, %zu samples)\n", ms_since(t),
                     specs.size(), n_samples);
 
+        // Where does adc_specs() lose to a flat build? Same 21.5 M values as adc_times(), but
+        // into one vector per event instead of one for the run. This isolates that.
+        t = Clock::now();
+        const std::vector<s2w::AdcEvent> evs = s2w::adc_events(seq);
+        std::size_t ev_samples = 0;
+        for (const s2w::AdcEvent& e : evs) {
+            ev_samples += e.t.size();
+        }
+        std::printf("  adc_events():    %8.1f ms  (%zu vectors, %zu samples)\n", ms_since(t),
+                    evs.size(), ev_samples);
+
+        // kspace_flat zero-fills three result arrays it then overwrites entirely. Is that free
+        // (fresh zero pages from the OS) or is it a real pass?
+        t = Clock::now();
+        {
+            std::vector<double> z0(n_samples, 0.0), z1(n_samples, 0.0), z2(n_samples, 0.0);
+            std::printf("  3x zero-fill:    %8.1f ms  (%.0f MB)\n", ms_since(t),
+                        3.0 * static_cast<double>(n_samples) * 8.0 / 1e6);
+        }
+
         t = Clock::now();
         std::vector<s2w::Trace> traces;
         traces.reserve(specs.size());

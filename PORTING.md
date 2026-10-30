@@ -200,6 +200,46 @@ was true here every time. And **a 1.2x gap and a 400x gap look the same from Pyt
 `adc_times` had been in the tree since step 3 and the parity suite never minded, because it was
 correct, only slow.
 
+### What is left on the table, measured
+
+Three opportunities were quantified and **not** taken. The numbers are from
+`tests/bench_expand.cpp` on `cones`, where `adc_kspace_flat()` costs ~450 ms in total.
+
+| opportunity | worth | why not taken |
+|---|---|---|
+| `adc_events()` builds one vector per event | ~22 ms (5%) | needs an interface change |
+| `kspace_flat` zero-fills 517 MB it then overwrites | up to ~37 ms (8%) | needs uninitialised storage |
+| nothing is cached between calls | up to ~130 ms per repeat call | changes semantics |
+
+**Per-event vectors.** `adc_events()` takes 84.3 ms to produce 21.5 M sample times as 4216
+separate vectors; `adc_times()` produces the *same* 21.5 M values into one vector in 62.1 ms. The
+difference is 4216 allocations at roughly 5 us each. The flat k-space path then concatenates them
+all into one array anyway, so for that path the per-event form is pure overhead — it allocates,
+fills, copies out and frees. Building the flat array directly would need a streaming variant of
+the `adc_events()` virtual, which means touching `WaveformSource` and both implementations.
+
+**The zero-fill.** `kspace_flat` starts with three `std::vector<double>(n, 0.0)` and then
+overwrites every element, because `flatten_specs` builds offsets that cover `[0, n)` contiguously.
+Allocating 517 MB zeroed costs 37 ms. Careful though: part of that is the page faults from first
+touching the memory, which an uninitialised allocation would still pay on first *write*. The
+genuinely avoidable share is the zeroing alone, so call it 15-25 ms rather than 37. Avoiding it
+means storage that `std::vector` cannot give (it always initialises), so `FlatK` would have to hold
+something else, and that type is what the bindings hand to numpy.
+
+**Caching.** Nothing is memoised: `sampler()` expands all three gradient channels every call
+(129.8 ms), and `gradients_dense()` expands them again (147.8 ms, almost all of it the same three
+expansions). A caller doing `gradients_dense()` then `adc_kspace_flat()` pays for the same work
+twice. Caching the expansion would be the largest single win available — but `Sequence` has a
+mutable `gradient_mode`, so a cache has to be invalidated on it, and a stale cache returns
+*plausible wrong numbers* rather than failing.
+
+All three share a reason beyond their cost: each one risks silently wrong output (an offset error,
+uninitialised memory, a stale cache), and the differential suite that would have caught that is
+gone. **Land golden-file tests on the corpus first** — see **What the cut-over gave up** — and
+these become ordinary optimisations instead of bets. Until then the honest summary is that this
+library is within 1.2-1.4x of the Rust original on the array-building calls, at parity or ahead on
+parse and `adc_times`, and that is good enough.
+
 ## Layout
 
 ```
@@ -220,7 +260,7 @@ tests/
   test_pwl.cpp                 C++ core tests (ctest), one per module
   test_h5.py                   against Pulseq's own reference files
   test_invariants.py           our own paths against each other
-  bench_expand.cpp             native timings, no Python boundary
+  bench_expand.cpp             native timings, no Python boundary; also the allocation probes
 scripts/
   bench.py                     timings through the Python API
 recipe.yaml                    wraps a built wheel into a conda package
