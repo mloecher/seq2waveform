@@ -13,6 +13,10 @@ add_executable(test_waveform test_waveform.cpp)
 target_link_libraries(test_waveform PRIVATE seq2waveform_core)
 add_test(NAME waveform COMMAND test_waveform)
 
+add_executable(test_sample test_sample.cpp)
+target_link_libraries(test_sample PRIVATE seq2waveform_core)
+add_test(NAME sample COMMAND test_sample)
+
 # Guards the vendored fast_float (see extern/fast_float/README.md): are fast_float and this
 # toolchain's std::from_chars bit-identical on real shape data, and what does each cost? Run it
 # after bumping the vendored version. Not a ctest -- it needs a dataset path.

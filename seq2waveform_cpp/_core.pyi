@@ -295,6 +295,214 @@ class Sequence:
             One entry per resolved `extension TRIGGERS` event, in block order.
         """
 
+    @property
+    def duration(self) -> float:
+        """Total sequence duration (s): the sum of the block durations."""
+
+    def sampler(self) -> Sampler:
+        """
+        Build a `Sampler` over this sequence's three gradient channels.
+
+        Precomputes the channels and their cumulative moments, so repeated sampling (a delay
+        sweep, say) does not re-expand the waveforms.
+
+        Returns
+        -------
+        Sampler
+        """
+
+    def adc_specs(self) -> list[object]:
+        """
+        Where to sample for each ADC event, and what to integrate k-space from.
+
+        The reference is the most recent excitation *before* the event. A warning goes to
+        stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is
+        how a mismatched sequence announces itself, so do not silence it.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, reference_s)` per ADC event.
+        """
+
+    def adc_excitations(self) -> list[tuple[float, float, float]]:
+        """
+        The excitation matched to each ADC event, aligned 1:1 with `adc_specs`.
+
+        Returns
+        -------
+        list of tuple
+            `(center_s, freq_hz, phase_rad)` per ADC event, or `(nan, nan, nan)` when no
+            excitation precedes it. Use `freq` and the gradient at `center` to get the slice
+            offset of each readout.
+        """
+
+    def trigger_specs(self, delay: float, dt: float, n: int) -> list[object]:
+        """
+        Sample specs for trigger-based (Skope) measurements.
+
+        Parameters
+        ----------
+        delay : float
+            Offset (s) from each trigger to the first sample.
+        dt : float
+            Sample spacing (s).
+        n : int
+            Samples per trigger.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, reference_s)` per trigger. The reference is the trigger itself, not
+            an excitation -- that is the external measurement's own reference.
+        """
+
+    def adc_gradient_samples(self) -> list[object]:
+        """
+        Gradient values (Hz/m) at every ADC sample, one trace per event.
+
+        Returns
+        -------
+        list of tuple
+            `(t, gx, gy, gz)` per ADC event.
+        """
+
+    def adc_kspace(self) -> list[object]:
+        """
+        k-space (1/m) at every ADC sample, one trace per event.
+
+        Each event integrates from its own preceding excitation. Gamma is already baked
+        into the Hz/m gradients, so this is the integral of G dt directly.
+
+        Returns
+        -------
+        list of tuple
+            `(t, kx, ky, kz)` per ADC event.
+        """
+
+    def adc_kspace_flat(self) -> object:
+        """
+        Whole-sequence ADC k-space as flat arrays -- the fast path for large sequences.
+
+        Returns
+        -------
+        tuple
+            `(t, kx, ky, kz, offsets)`. `offsets` are cumulative event boundaries, so
+            `offsets[0] == 0`, `offsets[-1] == len(t)`, and event `e` is
+            `offsets[e]:offsets[e+1]`. Recover the per-event split with
+            `np.split(kx, offsets[1:-1])`.
+        """
+
+    def trigger_gradient_samples(self, delay: float, dt: float, n: int) -> list[object]:
+        """Gradient values at trigger-based sample points, one trace per trigger."""
+
+    def trigger_kspace(self, delay: float, dt: float, n: int) -> list[object]:
+        """k-space at trigger-based sample points, integrated from each trigger."""
+
+    def trigger_kspace_flat(self, delay: float, dt: float, n: int) -> object:
+        """Trigger-based k-space as flat arrays. See `adc_kspace_flat`."""
+
+    def gradients_dense(self, raster: float) -> object:
+        """
+        All three gradient axes on a uniform raster over `[0, duration]`.
+
+        Parameters
+        ----------
+        raster : float
+            Sample spacing (s).
+
+        Returns
+        -------
+        tuple
+            `(t, gx, gy, gz)`. The last sample is at or past `duration`.
+        """
+
+    def gradient_axis_dense(self, axis: str, raster: float) -> tuple:
+        """
+        One gradient axis on a uniform raster over `[0, duration]`.
+
+        Returns
+        -------
+        tuple
+            `(t, values_hz_per_m)`.
+        """
+
+class Sampler:
+    """
+    Precomputed gradient channels and their cumulative moments, for fast repeated
+    sampling. Build one with `Sequence.sampler()`.
+
+    Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,
+    for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape
+    preserved.
+    """
+
+    @overload
+    def gradients(self, times: Annotated[NDArray[numpy.float64], dict(order='C', writable=False)]) -> tuple:
+        """
+        Gradient values (Hz/m) at `times`, interpolated between corners.
+
+        Parameters
+        ----------
+        times : ndarray
+            Query times: float64 seconds, or int64 picoseconds taken verbatim. Any shape.
+            A non-decreasing array takes a single forward sweep per axis; otherwise it is a
+            binary search per point.
+
+        Returns
+        -------
+        tuple of ndarray
+            `(gx, gy, gz)`, each shaped like `times`.
+        """
+
+    @overload
+    def gradients(self, times: Annotated[NDArray[numpy.int64], dict(order='C', writable=False)]) -> tuple:
+        """As above, with query times given as exact int64 picoseconds."""
+
+    @overload
+    def kspace(self, times: Annotated[NDArray[numpy.float64], dict(order='C', writable=False)], reference: float) -> tuple:
+        """
+        k-space (1/m) at `times`, integrating each gradient from `reference`.
+
+        Parameters
+        ----------
+        times : ndarray
+            Query times (float64 seconds or int64 picoseconds). Any shape.
+        reference : float
+            Integration start (s) -- an excitation center for an ADC readout, or the
+            trigger time for an external measurement.
+
+        Returns
+        -------
+        tuple of ndarray
+            `(kx, ky, kz)`, each shaped like `times`.
+        """
+
+    @overload
+    def kspace(self, times: Annotated[NDArray[numpy.int64], dict(order='C', writable=False)], reference: int) -> tuple:
+        """As above, with times and reference given as exact int64 picoseconds."""
+
+    def kspace_flat(self, times: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', writable=False)], offsets: Annotated[NDArray[numpy.int64], dict(shape=(None,), order='C', writable=False)], references: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', writable=False)]) -> tuple:
+        """
+        Batched k-space over many events in one call, returning flat arrays.
+
+        Parameters
+        ----------
+        times : ndarray of float64
+            All events' query times (s), concatenated.
+        offsets : ndarray of int64
+            Cumulative event boundaries, length `len(references) + 1`: event `e` is
+            `times[offsets[e]:offsets[e+1]]`.
+        references : ndarray of float64
+            Per-event integration start (s).
+
+        Returns
+        -------
+        tuple of ndarray
+            `(kx, ky, kz)`, each the length of `times`. Reuses the one prebuilt sampler, so
+            this is the fast path for whole-sequence k-space and for delay sweeps.
+        """
+
 def parse_shapes(path: str) -> dict:
     """
     Dump the `[SHAPES]` library of a `.seq` file.

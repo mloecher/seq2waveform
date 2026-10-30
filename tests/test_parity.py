@@ -334,3 +334,181 @@ def test_triggers_match_rust(seq_path):
     r = rust.Sequence(seq_path)
     c = cpp.Sequence(seq_path)
     assert c.triggers() == r.triggers(), "trigger events differ"
+
+
+# --- the sampler and k-space (port step 4) --------------------------------------------------
+
+
+def test_duration_matches_rust(seq_path):
+    """Summed block durations, accumulated in the same order so the f64 sum is identical."""
+    assert cpp.Sequence(seq_path).duration == rust.Sequence(seq_path).duration
+
+
+def test_sampler_gradients_match_rust(seq_path):
+    """Sampler.gradients at the ADC times, all three axes."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    times = _query_times(r)
+    _, rx, ry, rz = r.sampler().gradients(times)
+    cx, cy, cz = c.sampler().gradients(times)
+    for ax, want, got in (("x", rx, cx), ("y", ry, cy), ("z", rz, cz)):
+        assert np.array_equal(got, np.asarray(want)), f"g{ax}: sampled values differ"
+
+
+def test_sampler_kspace_match_rust(seq_path):
+    """Sampler.kspace against the Rust sampler, referenced to the first ADC's excitation."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    times = _query_times(r)
+    specs = r.adc_specs()
+    if not specs:
+        pytest.skip("dataset has no ADC specs")
+    reference = specs[0][1]
+    _, rx, ry, rz = r.sampler().kspace(times, reference)
+    cx, cy, cz = c.sampler().kspace(times, reference)
+    for ax, want, got in (("x", rx, cx), ("y", ry, cy), ("z", rz, cz)):
+        assert np.array_equal(got, np.asarray(want)), f"k{ax}: k-space differs"
+
+
+def test_adc_specs_and_excitations_match_rust(seq_path):
+    """The ADC-to-excitation matching: which excitation each readout integrates from.
+
+    This is where an off-by-one would be silent and wrong -- a readout referenced to the *next*
+    excitation still produces plausible-looking k-space.
+    """
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    rs, cs = r.adc_specs(), c.adc_specs()
+    assert len(cs) == len(rs), "number of ADC specs differs"
+    for i, (want, got) in enumerate(zip(rs, cs)):
+        assert np.array_equal(got[0], want[0]), f"spec {i}: times differ"
+        assert got[1] == want[1], f"spec {i}: k-space reference differs"
+    # NaN-aware, since an ADC with no preceding excitation reports (nan, nan, nan).
+    assert np.array_equal(
+        np.asarray(c.adc_excitations(), dtype=float),
+        np.asarray(r.adc_excitations(), dtype=float),
+        equal_nan=True,
+    ), "matched excitations differ"
+
+
+def test_adc_kspace_flat_matches_rust(seq_path):
+    """The batched flat path, including its event offsets."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    rt, rkx, rky, rkz, roff = r.adc_kspace_flat()
+    ct, ckx, cky, ckz, coff = c.adc_kspace_flat()
+    assert np.array_equal(coff, np.asarray(roff)), "event offsets differ"
+    assert np.array_equal(ct, np.asarray(rt)), "flat times differ"
+    for ax, want, got in (("x", rkx, ckx), ("y", rky, cky), ("z", rkz, ckz)):
+        assert np.array_equal(got, np.asarray(want)), f"flat k{ax} differs"
+
+
+def test_flat_path_matches_per_event_path(seq_path):
+    """The C++ flat and per-event k-space paths agree with each other.
+
+    Both ports keep two implementations of the same quantity; this pins the C++ pair together so a
+    future optimisation of either cannot drift, independently of the Rust comparison.
+    """
+    c = cpp.Sequence(seq_path)
+    t, kx, ky, kz, off = c.adc_kspace_flat()
+    per = c.adc_kspace()
+    assert len(off) == len(per) + 1, "offsets and event count disagree"
+    for e, (et, ex, ey, ez) in enumerate(per):
+        a, b = off[e], off[e + 1]
+        assert np.array_equal(t[a:b], et), f"event {e}: times differ"
+        assert np.array_equal(kx[a:b], ex), f"event {e}: kx differs"
+        assert np.array_equal(ky[a:b], ey), f"event {e}: ky differs"
+        assert np.array_equal(kz[a:b], ez), f"event {e}: kz differs"
+
+
+def test_dense_gradients_match_rust(seq_path):
+    """The uniform-raster dense sampling, which is what a plot or an h5 comparison uses."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    raster = 1e-4
+    rt, rx, ry, rz = r.gradients_dense(raster)
+    ct, cx, cy, cz = c.gradients_dense(raster)
+    assert np.array_equal(ct, np.asarray(rt)), "dense times differ"
+    for ax, want, got in (("x", rx, cx), ("y", ry, cy), ("z", rz, cz)):
+        assert np.array_equal(got, np.asarray(want)), f"dense g{ax} differs"
+    for ax in "xyz":
+        at, av = r.gradient_axis_dense(ax, raster)
+        bt, bv = c.gradient_axis_dense(ax, raster)
+        assert np.array_equal(bt, np.asarray(at)), f"axis-dense g{ax} times differ"
+        assert np.array_equal(bv, np.asarray(av)), f"axis-dense g{ax} values differ"
+
+
+def test_trigger_sampling_matches_rust(seq_path):
+    """Trigger-based (Skope) sampling, which references the trigger rather than an excitation."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    if not r.triggers():
+        pytest.skip("dataset has no triggers")
+    delay, dt, n = 0.0, 10e-6, 64
+    rspecs, cspecs = r.trigger_specs(delay, dt, n), c.trigger_specs(delay, dt, n)
+    assert len(cspecs) == len(rspecs), "number of trigger specs differs"
+    for i, (want, got) in enumerate(zip(rspecs, cspecs)):
+        assert np.array_equal(got[0], want[0]), f"trigger spec {i}: times differ"
+        assert got[1] == want[1], f"trigger spec {i}: reference differs"
+
+    rt, rkx, rky, rkz, roff = r.trigger_kspace_flat(delay, dt, n)
+    ct, ckx, cky, ckz, coff = c.trigger_kspace_flat(delay, dt, n)
+    assert np.array_equal(coff, np.asarray(roff)), "trigger offsets differ"
+    assert np.array_equal(ct, np.asarray(rt)), "trigger times differ"
+    for ax, want, got in (("x", rkx, ckx), ("y", rky, cky), ("z", rkz, ckz)):
+        assert np.array_equal(got, np.asarray(want)), f"trigger k{ax} differs"
+
+
+def test_nd_time_arrays_keep_their_shape(seq_path):
+    """An N-D query comes back shaped like the query, with the same values as the flat form."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    flat = _query_times(r)[: 8 * 16]
+    if flat.size < 8 * 16:
+        pytest.skip("not enough ADC samples for a 2-D query")
+    grid = flat.reshape(8, 16)
+    s = c.sampler()
+    gx_flat = s.gradients(flat)[0]
+    gx_grid = s.gradients(grid)[0]
+    assert gx_grid.shape == (8, 16), f"expected (8, 16), got {gx_grid.shape}"
+    assert np.array_equal(gx_grid.ravel(), gx_flat), "N-D and flat results differ"
+
+
+def test_unreferenced_adc_matches_rust(tmp_path):
+    """An ADC with no excitation before it: both ports must agree on the sentinel behaviour.
+
+    No dataset reaches this -- every ADC in all five corpora has a preceding excitation -- so
+    without a synthetic sequence the branch is untested on both sides. The reference becomes a
+    far-past sentinel, so k-space integrates from the start of the waveform, and the matched
+    excitation is reported as NaN rather than as a plausible wrong number.
+    """
+    seq_text = (
+        "[DEFINITIONS]\n"
+        "GradientRasterTime 1e-05\n"
+        "BlockDurationRaster 1e-05\n"
+        "[BLOCKS]\n"
+        " 1 100 0 0 0 1 1 0\n"
+        "[TRAP]\n"
+        "1 100 100 800 100 0\n"
+        "[ADC]\n"
+        "1 3 1000 0 0 0 0 0 0\n"
+    )
+    p = tmp_path / "no_rf.seq"
+    p.write_text(seq_text)
+
+    r = rust.Sequence(str(p))
+    c = cpp.Sequence(str(p))
+    assert np.array_equal(
+        np.asarray(c.adc_excitations(), dtype=float),
+        np.asarray(r.adc_excitations(), dtype=float),
+        equal_nan=True,
+    ), "matched excitations differ for an unreferenced ADC"
+
+    rs, cs = r.adc_specs(), c.adc_specs()
+    assert len(cs) == len(rs) == 1
+    assert cs[0][1] == rs[0][1], "sentinel reference differs"
+
+    _, rkx, rky, rkz, _ = r.adc_kspace_flat()
+    _, ckx, cky, ckz, _ = c.adc_kspace_flat()
+    for ax, want, got in (("x", rkx, ckx), ("y", rky, cky), ("z", rkz, ckz)):
+        assert np.array_equal(got, np.asarray(want)), f"k{ax} differs for an unreferenced ADC"

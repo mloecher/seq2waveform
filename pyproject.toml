@@ -59,5 +59,9 @@ test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON && cmake --build buil
 build-oracle = "maturin develop --manifest-path $S2W_RUST_REPO/python/Cargo.toml"
 # The port's safety net: C++ vs Rust on every dataset, exact equality.
 test-parity = { cmd = "pytest tests/test_parity.py -v", depends-on = ["build", "build-oracle"] }
+# Independent ground truth: C++ vs Pulseq's own reference h5, at 1e-4. The only check that does
+# not depend on the Rust implementation being right, so it catches what both ports get wrong.
+# Needs no oracle.
+test-h5 = { cmd = "pytest tests/test_h5.py -v", depends-on = ["build"] }
 # Everything.
-test = { depends-on = ["test-cpp", "test-parity"] }
+test = { depends-on = ["test-cpp", "test-parity", "test-h5"] }

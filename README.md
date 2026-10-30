@@ -6,21 +6,26 @@ files into waveform arrays, with k-space sampling at arbitrary times.
 Built with nanobind + scikit-build-core, so the Python type stubs (docstrings and `NDArray`
 annotations included) are regenerated from the compiled module on every build.
 
-**Status: in progress.** The time type, the piecewise-linear core, the Pulseq `.seq` reader and
-waveform expansion are ported and verified bit-exact against the Rust implementation — 76
-differential tests covering every event library, every shape, the parse-error messages, and 24.8 M
-gradient corners across all three gradient modes. Parsing runs at parity with the Rust version.
-The sampler/k-space and the DSV/INF readers are not started, and the reference-h5 comparison waits
-on the sampler.
+**Status: in progress.** The time type, the piecewise-linear core, the Pulseq `.seq` reader,
+waveform expansion and the sampler/k-space are ported and verified bit-exact against the Rust
+implementation — 122 differential tests covering every event library, every shape, the parse-error
+messages, 24.8 M gradient corners across all three gradient modes and 27.9 M k-space points. The
+port is also checked independently against Pulseq's own reference `.h5` at a 1e-4 bar (worst actual
+margin 4.3e-6). Parsing runs at parity with the Rust version. The Siemens DSV and INF readers are
+not started.
 
 ## Build and test
 
 ```bash
 pixi run build          # editable install, regenerates seq2waveform_cpp/_core.pyi
 pixi run test-cpp       # C++ core tests via ctest
-pixi run test-parity    # C++ vs the Rust implementation on the real datasets
-pixi run test           # both
+pixi run test-parity    # C++ vs the Rust implementation on the real datasets, exactly
+pixi run test-h5        # C++ vs Pulseq's own reference h5 at 1e-4 (no oracle needed)
+pixi run test           # all three
 ```
+
+`test-parity` only proves the two implementations agree; `test-h5` is the only check that does not
+depend on the Rust code being right, so it is the one to run after changing a waveform.
 
 Requires a system Visual Studio (MSVC) install on Windows; `cmake` and `nanobind` come from the
 pixi environment. The one third-party dependency, [fast_float](extern/fast_float/README.md), is

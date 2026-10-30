@@ -49,15 +49,20 @@ std::vector<double> PiecewiseLinear::sample_at(const std::vector<Ps>& times) con
 }
 
 std::vector<double> PiecewiseLinear::sample_at_sorted(const std::vector<Ps>& times) const {
+    return sample_at_sorted(times.data(), times.size());
+}
+
+std::vector<double> PiecewiseLinear::sample_at_sorted(const Ps* times, std::size_t count) const {
     const std::size_t n = t.size();
-    if (n == 0 || times.empty()) {
-        return std::vector<double>(times.size(), 0.0);
+    if (n == 0 || count == 0) {
+        return std::vector<double>(count, 0.0);
     }
     std::vector<double> out;
-    out.reserve(times.size());
+    out.reserve(count);
     // Cursor: first corner past times[0], never below 1 so [j-1, j] is always a real segment.
     std::size_t j = std::max<std::size_t>(first_past(t, times[0]), 1);
-    for (const Ps at : times) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const Ps at = times[i];
         if (at <= t[0]) {
             out.push_back(v[0]);
             continue;
@@ -129,14 +134,20 @@ double PiecewiseLinear::moment_to(Ps at, const std::vector<double>& cum) const {
 
 std::vector<double> PiecewiseLinear::moments_at_sorted(const std::vector<Ps>& times,
                                                        const std::vector<double>& cum) const {
+    return moments_at_sorted(times.data(), times.size(), cum);
+}
+
+std::vector<double> PiecewiseLinear::moments_at_sorted(const Ps* times, std::size_t count,
+                                                       const std::vector<double>& cum) const {
     const std::size_t n = t.size();
-    if (n == 0 || times.empty()) {
-        return std::vector<double>(times.size(), 0.0);
+    if (n == 0 || count == 0) {
+        return std::vector<double>(count, 0.0);
     }
     std::vector<double> out;
-    out.reserve(times.size());
+    out.reserve(count);
     std::size_t j = std::max<std::size_t>(first_past(t, times[0]), 1);
-    for (const Ps at : times) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const Ps at = times[i];
         if (at <= t[0]) {
             out.push_back(0.0);
             continue;

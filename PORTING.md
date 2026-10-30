@@ -41,6 +41,12 @@ Built and verified:
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
   `Shape::decompressed`, `Sequence::definition_f64`.
 - `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
+- `src/include/seq2waveform/sample.hpp`, `src/sample.cpp` — the `Sampler` (gradients, k-space,
+  the flat batched path), the spec builders and the dense uniform-raster sampling. Rust's
+  `WaveformSource` trait with default methods becomes an abstract base class whose non-virtual
+  helpers are written in terms of five pure virtuals, and `SequenceSource` is the adapter that
+  makes a parsed `Sequence` one — keeping `Sequence` a plain aggregate, since it is parsed data
+  rather than a polymorphic object. `DsvSet` becomes the second subclass at step 7.
 - `src/include/seq2waveform/waveform.hpp`, `src/waveform.cpp` — the block walk and expansion:
   `waveforms`, `gradient`, `adc_times`, `adc_events`, `rf_events_meta`, `trigger_events`, plus
   `stitch`, `restore_additional_shape_samples` and `resample_at_centers`. Rust puts these on
@@ -53,11 +59,17 @@ Built and verified:
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  76 of them as of step 3. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
+  122 of them as of step 4. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
   shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
-  ADC sample times, 4,601 RF events and 4,261 triggers. All exactly equal. A one-ULP perturbation
-  of a single corner value does fail the suite, which is worth re-checking whenever a new
-  comparison is added -- an assertion that cannot fail is worse than no assertion.
+  ADC sample times, 4,601 RF events and 4,261 triggers; step 4 added 27.9 M flat k-space points.
+  All exactly equal. A one-ULP perturbation of a single corner value does fail the suite, and
+  shifting a k-space reference by 10 µs does change the result -- worth re-checking whenever a new
+  comparison is added, because an assertion that cannot fail is worse than no assertion.
+- `tests/test_h5.py` — **the only check that does not depend on the Rust implementation being
+  right.** Everything above compares the two ports, so an error they *share* is invisible to all
+  of it; the `.h5` is written by Pulseq itself. 15 tests at a 1e-4 relative bar, and the worst
+  actual margin is 4.3e-6 — a factor of 23 of headroom, so it is agreement rather than a near
+  miss. It needs no oracle, so `pixi run test-h5` works on a bare checkout.
 - `tests/test_waveform.cpp` — the Rust unit tests from `waveform.rs`, ported. Two matter most:
   `resample_jump_is_exact_vs_bruteforce` re-derives the DSV resampling the slow way (`value_at` at
   every center, then the same collinear drop) and demands the fast path's segment-skipping jump
@@ -68,14 +80,24 @@ Built and verified:
   1,289,657 across the datasets), and times both. Run it after bumping the vendored version:
   `cmake --build build-tests --config Release --target bench_scan`, then pass it a `.seq` path.
 
-Not started: the sampler and k-space, DSV, INF. See **Port order**.
+Not started: the DSV and INF readers, and `DsvSet` as a second `WaveformSource`. See **Port order**.
 
-> **Step 3 was ported from an uncommitted change.** `crates/seq2waveform/src/waveform.rs` had an
-> uncommitted fix to `resample_at_centers` (the lead-in/lead-out centers, so a DSV channel reads
-> zero outside its range) when this port was written, and `build-oracle` builds the oracle from the
-> working tree — so that is the behaviour the C++ side matches and the parity suite pins. If that
-> change is ever reverted or reworked in the Rust repo, DSV-mode parity will break here and the
-> failure will look like a C++ bug. Commit it there.
+Two branches that no dataset reaches, so they are covered by synthetic tests only — check them by
+hand if you touch the matching code. An **ADC with no preceding excitation** (every ADC in all five
+corpora has one) takes a far-past sentinel reference and reports `(nan, nan, nan)`:
+`adc_with_no_preceding_excitation` in `tests/test_sample.cpp` and
+`test_unreferenced_adc_matches_rust` in the parity suite build a synthetic `.seq` for it. The
+**excitation/ADC count mismatch warning** is the opposite case — it fires on four of the five
+datasets (cones 4236 vs 4216, epi 20 vs 1080), so the stderr noise during a parity run is expected,
+not a defect.
+
+> **Step 3 was ported from an uncommitted change, confirmed as intended.**
+> `crates/seq2waveform/src/waveform.rs` had an uncommitted fix to `resample_at_centers` (the
+> lead-in/lead-out centers, so a DSV channel reads zero outside its range) when this port was
+> written, and `build-oracle` builds the oracle from the working tree — so that is the behaviour
+> the C++ side matches and the parity suite pins. The author has confirmed it is the wanted
+> behaviour. If it is ever reverted or reworked in the Rust repo, DSV-mode parity will break here
+> and the failure will look like a C++ bug.
 
 ### Parsing performance, measured
 
@@ -419,11 +441,10 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
    three modes and three axes, 27.3 M ADC sample times, 4,601 RF events and 4,261 triggers, all
    exactly equal. **The h5 comparison at 1e-4 is still outstanding** — it needs the dense sampler
    from step 4, and it is what would catch an error both ports share.
-4. **`sample.cpp`** — `Sampler`, the spec builders, k-space, the flat batched path. Oracle:
-   `sampler().gradients`, `.kspace`, `.kspace_flat`, `adc_kspace_flat`.
-   Rust's `WaveformSource` trait with default methods maps to an abstract base class whose
-   non-virtual methods are written in terms of pure-virtual primitives (`gradient`, `adc_events`,
-   `excitations`, `trigger_events`, `duration`).
+4. ~~`sample.cpp`~~ — done: `Sampler`, the spec builders, k-space, the flat batched path, the
+   dense sampling, and the N-D time-array support in the bindings. 27.9 M flat k-space points
+   compared exactly. **The reference-h5 comparison is done too** (`pixi run test-h5`), which
+   closes the one thing step 3 left outstanding.
 5. **`dsv.cpp`** — RLE-delta decode to PWL corners. Oracle: `read_dsv` dense values and
    `read_dsv_pwl` corners.
 6. **`inf.cpp`** — INF parse, lead-in, ADC merge, triggers, RF centres. Oracle: `inf_lead_in`,
@@ -472,9 +493,8 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 4 of the port order — sample.cpp, the Sampler and k-space
-(../seq2waveform/crates/seq2waveform/src/sample.rs). It also unblocks the h5 comparison that step 3
-could not do, so finish by checking the ported gradients against the reference h5 at 1e-4.
+Scope for this session: step 5 of the port order — dsv.cpp, the Siemens .dsv reader
+(../seq2waveform/crates/seq2waveform/src/dsv.rs).
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say
@@ -488,9 +508,12 @@ Rules:
     dataset, asserting exact equality (np.array_equal), not a tolerance;
   * a parity run that reports "skipped" has found no oracle or no corpus — that is a failure, not
     a pass. Check the summary line.
-- Verify before reporting: `pixi run test-cpp` and `pixi run test-parity` here, and `pixi run test`
-  in ../seq2waveform (the Rust suite vs the h5 and the DSV must stay green). Paste the real output.
-  If something fails, say so with the numbers rather than narrowing the test.
+- Verify before reporting: `pixi run test-cpp`, `pixi run test-parity` and `pixi run test-h5`
+  here, and `pixi run test` in ../seq2waveform (the Rust suite vs the h5 and the DSV must stay
+  green). Paste the real output. If something fails, say so with the numbers rather than narrowing
+  the test.
+- The parity suite only proves the two ports agree. `pixi run test-h5` is the only independent
+  ground truth in the project, so run it on anything that changes a waveform.
 - The generated stub seq2waveform_cpp/_core.pyi is build output — never edit it. Put docstrings in
   the nanobind def(...) calls, numpydoc style, and check they came through in the regenerated stub.
 - ../seq2waveform must keep working until the final cut-over, so do not change its behaviour. You

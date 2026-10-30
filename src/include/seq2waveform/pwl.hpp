@@ -34,6 +34,11 @@ struct PiecewiseLinear {
     /// a binary search per point -- O(corners + times). Hot path for ADC readouts.
     std::vector<double> sample_at_sorted(const std::vector<Ps>& times) const;
 
+    /// As above over a contiguous range, so a batched caller can work on a slice of a larger times
+    /// array without copying it (`Sampler::kspace_flat` does, per event). The vector overload
+    /// delegates here.
+    std::vector<double> sample_at_sorted(const Ps* times, std::size_t count) const;
+
     /// Exact integral of v*dt from `t0` to `t1` -- sum of trapezoids over the linear segments.
     /// The k-space building block: k(t) = integral from the excitation to t.
     double integral(Ps t0, Ps t1) const;
@@ -50,6 +55,10 @@ struct PiecewiseLinear {
     /// `moment_to` over non-decreasing `times`, via one forward cursor -- O(corners + times).
     /// The hot path for k-space over an ADC readout.
     std::vector<double> moments_at_sorted(const std::vector<Ps>& times,
+                                          const std::vector<double>& cum) const;
+
+    /// As above over a contiguous range; see `sample_at_sorted(const Ps*, std::size_t)`.
+    std::vector<double> moments_at_sorted(const Ps* times, std::size_t count,
                                           const std::vector<double>& cum) const;
 };
 

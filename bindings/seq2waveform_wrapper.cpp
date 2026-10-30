@@ -27,6 +27,7 @@
 #include "seq2waveform/model.hpp"
 #include "seq2waveform/parser.hpp"
 #include "seq2waveform/pwl.hpp"
+#include "seq2waveform/sample.hpp"
 #include "seq2waveform/time.hpp"
 #include "seq2waveform/waveform.hpp"
 
@@ -193,6 +194,77 @@ const char* grad_mode_to_str(s2w::GradMode m) {
             break;
     }
     return "pulseq";
+}
+
+/// Any-rank, C-contiguous input array -- the Sampler accepts an N-D time grid.
+template <typename T>
+using InAny = nb::ndarray<const T, nb::c_contig>;
+
+/// A Trace as the `(t, x, y, z)` tuple the Rust bindings return.
+nb::object trace_to_py(const s2w::Trace& tr) {
+    std::vector<double> x = tr.x;
+    std::vector<double> y = tr.y;
+    std::vector<double> z = tr.z;
+    return nb::make_tuple(secs_array(tr.t), to_numpy(std::move(x)), to_numpy(std::move(y)),
+                          to_numpy(std::move(z)));
+}
+
+/// Flatten an N-D time array to Ps, keeping its shape so the sampled values can be reshaped back.
+///
+/// Rust's `extract_ps_dyn` plus `reshape_like`. Sampling an `(events, samples)` grid is common
+/// enough that flattening it at the boundary and handing back a 1-D array would be a real
+/// annoyance; the values are per-point, so the shape carries straight through.
+template <typename T, typename Conv>
+std::pair<std::vector<s2w::Ps>, std::vector<std::size_t>> flatten_times(const InAny<T>& a,
+                                                                       Conv conv) {
+    std::vector<std::size_t> shape;
+    std::size_t total = 1;
+    for (std::size_t d = 0; d < a.ndim(); ++d) {
+        shape.push_back(a.shape(d));
+        total *= a.shape(d);
+    }
+    std::vector<s2w::Ps> out;
+    out.reserve(total);
+    const T* p = a.data();
+    for (std::size_t i = 0; i < total; ++i) {
+        out.push_back(conv(p[i]));
+    }
+    return {std::move(out), std::move(shape)};
+}
+
+/// Reshape a flat result back to the query's shape; a no-op for 0-D and 1-D input.
+nb::object reshape_like(std::vector<double>&& v, const std::vector<std::size_t>& shape) {
+    nb::object arr = nb::cast(to_numpy(std::move(v)));
+    if (shape.size() <= 1) {
+        return arr;
+    }
+    return arr.attr("reshape")(nb::cast(shape));
+}
+
+s2w::Ps ps_of_secs(double x) { return s2w::Ps::from_secs(x); }
+s2w::Ps ps_of_raw(std::int64_t x) { return s2w::Ps(x); }
+
+/// `(times, reference_s)` per spec -- the Rust bindings' spec shape.
+std::vector<nb::object> specs_to_py(const std::vector<s2w::SampleSpec>& specs) {
+    std::vector<nb::object> out;
+    out.reserve(specs.size());
+    for (const s2w::SampleSpec& sp : specs) {
+        out.push_back(nb::make_tuple(secs_array(sp.times), sp.reference.secs()));
+    }
+    return out;
+}
+
+nb::object flat_to_py(const s2w::FlatTrace& f) {
+    std::vector<double> kx = f.kx;
+    std::vector<double> ky = f.ky;
+    std::vector<double> kz = f.kz;
+    std::vector<std::int64_t> off;
+    off.reserve(f.offsets.size());
+    for (const std::size_t o : f.offsets) {
+        off.push_back(static_cast<std::int64_t>(o));
+    }
+    return nb::make_tuple(secs_array(f.t), to_numpy(std::move(kx)), to_numpy(std::move(ky)),
+                          to_numpy(std::move(kz)), to_numpy(std::move(off)));
 }
 
 char axis_from_str(const std::string& axis) {
@@ -433,7 +505,7 @@ NB_MODULE(_core, m) {
           "    `{id: tuple}` in the field order of the corresponding struct; `blocks` is a list\n"
           "    of `(num, duration_s, rf, gx, gy, gz, adc, ext)`. All times are in seconds.");
 
-    nb::class_<s2w::Sequence>(
+    nb::class_<s2w::SequenceSource>(
         m, "Sequence",
         "A parsed Pulseq sequence: parse once, then query waveforms many times without\n"
         "re-parsing.\n\n"
@@ -451,18 +523,24 @@ NB_MODULE(_core, m) {
         "    one of the three names.")
         .def(
             "__init__",
-            [](s2w::Sequence* self, const std::string& path, const std::string& gradient_mode) {
+            [](s2w::SequenceSource* self, const std::string& path,
+               const std::string& gradient_mode) {
+                // Validate the mode before parsing, so a typo fails fast rather than after
+                // reading a large file.
                 const s2w::GradMode mode = grad_mode_from_str(gradient_mode);
-                new (self) s2w::Sequence(s2w::parse_file(path));
-                self->grad_mode = mode;
+                new (self) s2w::SequenceSource(s2w::parse_file(path));
+                self->sequence().grad_mode = mode;
             },
             "path"_a, "gradient_mode"_a = "pulseq")
         .def_prop_ro(
-            "num_blocks", [](const s2w::Sequence& s) { return s.blocks.size(); },
+            "num_blocks", [](const s2w::SequenceSource& s) { return s.sequence().blocks.size(); },
             "Number of blocks in the parsed sequence.")
         .def_prop_rw(
-            "gradient_mode", [](const s2w::Sequence& s) { return grad_mode_to_str(s.grad_mode); },
-            [](s2w::Sequence& s, const std::string& mode) { s.grad_mode = grad_mode_from_str(mode); },
+            "gradient_mode",
+            [](const s2w::SequenceSource& s) { return grad_mode_to_str(s.sequence().grad_mode); },
+            [](s2w::SequenceSource& s, const std::string& mode) {
+                s.sequence().grad_mode = grad_mode_from_str(mode);
+            },
             "How arbitrary/centers-sampled gradients render:\n\n"
             "- `\"pulseq\"` (default): edge reconstruction, matches the h5 (can staircase on\n"
             "  fast waveforms);\n"
@@ -473,8 +551,8 @@ NB_MODULE(_core, m) {
             "  commanded waveform, one consistent representation.")
         .def(
             "gradient",
-            [](const s2w::Sequence& s, const std::string& axis) {
-                const s2w::PiecewiseLinear g = s2w::gradient(s, axis_from_str(axis));
+            [](const s2w::SequenceSource& s, const std::string& axis) {
+                const s2w::PiecewiseLinear g = s.gradient(axis_from_str(axis));
                 std::vector<double> v = g.v;
                 return nb::make_tuple(secs_array(g.t), to_numpy(std::move(v)));
             },
@@ -491,7 +569,8 @@ NB_MODULE(_core, m) {
             "corner_values : ndarray of float64\n"
             "    Corner amplitudes (Hz/m).")
         .def(
-            "adc_times", [](const s2w::Sequence& s) { return secs_array(s2w::adc_times(s)); },
+            "adc_times",
+            [](const s2w::SequenceSource& s) { return secs_array(s2w::adc_times(s.sequence())); },
             "All ADC sample times (s), flattened across every ADC event.\n\n"
             "Returns\n"
             "-------\n"
@@ -499,9 +578,9 @@ NB_MODULE(_core, m) {
             "    Sample times (s), at dwell centers: `delay + dwell * (k + 0.5)`.")
         .def(
             "adc_events",
-            [](const s2w::Sequence& s) {
+            [](const s2w::SequenceSource& s) {
                 std::vector<nb::object> out;
-                for (const s2w::AdcEvent& e : s2w::adc_events(s)) {
+                for (const s2w::AdcEvent& e : s.adc_events()) {
                     out.push_back(nb::cast(secs_array(e.t)));
                 }
                 return out;
@@ -513,9 +592,9 @@ NB_MODULE(_core, m) {
             "    One float64 array of sample times (s) per ADC event.")
         .def(
             "adc_events_meta",
-            [](const s2w::Sequence& s) {
+            [](const s2w::SequenceSource& s) {
                 std::vector<nb::object> out;
-                for (const s2w::AdcEvent& e : s2w::adc_events(s)) {
+                for (const s2w::AdcEvent& e : s.adc_events()) {
                     out.push_back(nb::make_tuple(secs_array(e.t), e.freq, e.phase));
                 }
                 return out;
@@ -527,9 +606,9 @@ NB_MODULE(_core, m) {
             "    `(times_s, freq_hz, phase_rad)` per ADC event.")
         .def(
             "rf_events",
-            [](const s2w::Sequence& s) {
+            [](const s2w::SequenceSource& s) {
                 std::vector<std::tuple<double, double, double, std::string>> out;
-                for (const s2w::RfMeta& r : s2w::rf_events_meta(s)) {
+                for (const s2w::RfMeta& r : s2w::rf_events_meta(s.sequence())) {
                     out.emplace_back(r.center.secs(), r.freq, r.phase, s2w::rf_use_name(r.use));
                 }
                 return out;
@@ -544,9 +623,9 @@ NB_MODULE(_core, m) {
             "    One entry per RF event, in block order.")
         .def(
             "triggers",
-            [](const s2w::Sequence& s) {
+            [](const s2w::SequenceSource& s) {
                 std::vector<std::tuple<std::uint32_t, double, double>> out;
-                for (const s2w::TriggerEvent& t : s2w::trigger_events(s)) {
+                for (const s2w::TriggerEvent& t : s.trigger_events()) {
                     out.emplace_back(t.channel, t.time.secs(), t.duration.secs());
                 }
                 return out;
@@ -555,7 +634,266 @@ NB_MODULE(_core, m) {
             "Returns\n"
             "-------\n"
             "list of tuple\n"
-            "    One entry per resolved `extension TRIGGERS` event, in block order.");
+            "    One entry per resolved `extension TRIGGERS` event, in block order.")
+        .def_prop_ro(
+            "duration", [](const s2w::SequenceSource& s) { return s.duration(); },
+            "Total sequence duration (s): the sum of the block durations.")
+        .def(
+            "sampler", [](const s2w::SequenceSource& s) { return s.sampler(); },
+            "Build a `Sampler` over this sequence's three gradient channels.\n\n"
+            "Precomputes the channels and their cumulative moments, so repeated sampling (a delay\n"
+            "sweep, say) does not re-expand the waveforms.\n\n"
+            "Returns\n"
+            "-------\n"
+            "Sampler")
+        .def(
+            "adc_specs", [](const s2w::SequenceSource& s) { return specs_to_py(s.adc_specs()); },
+            "Where to sample for each ADC event, and what to integrate k-space from.\n\n"
+            "The reference is the most recent excitation *before* the event. A warning goes to\n"
+            "stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is\n"
+            "how a mismatched sequence announces itself, so do not silence it.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(times_s, reference_s)` per ADC event.")
+        .def(
+            "adc_excitations",
+            [](const s2w::SequenceSource& s) { return s.adc_excitations(); },
+            "The excitation matched to each ADC event, aligned 1:1 with `adc_specs`.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(center_s, freq_hz, phase_rad)` per ADC event, or `(nan, nan, nan)` when no\n"
+            "    excitation precedes it. Use `freq` and the gradient at `center` to get the slice\n"
+            "    offset of each readout.")
+        .def(
+            "trigger_specs",
+            [](const s2w::SequenceSource& s, double delay, double dt, std::size_t n) {
+                return specs_to_py(s.trigger_specs(delay, dt, n));
+            },
+            "delay"_a, "dt"_a, "n"_a,
+            "Sample specs for trigger-based (Skope) measurements.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "delay : float\n"
+            "    Offset (s) from each trigger to the first sample.\n"
+            "dt : float\n"
+            "    Sample spacing (s).\n"
+            "n : int\n"
+            "    Samples per trigger.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(times_s, reference_s)` per trigger. The reference is the trigger itself, not\n"
+            "    an excitation -- that is the external measurement's own reference.")
+        .def(
+            "adc_gradient_samples",
+            [](const s2w::SequenceSource& s) {
+                std::vector<nb::object> out;
+                for (const s2w::Trace& tr : s.adc_gradient_samples()) {
+                    out.push_back(trace_to_py(tr));
+                }
+                return out;
+            },
+            "Gradient values (Hz/m) at every ADC sample, one trace per event.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(t, gx, gy, gz)` per ADC event.")
+        .def(
+            "adc_kspace",
+            [](const s2w::SequenceSource& s) {
+                std::vector<nb::object> out;
+                for (const s2w::Trace& tr : s.adc_kspace()) {
+                    out.push_back(trace_to_py(tr));
+                }
+                return out;
+            },
+            "k-space (1/m) at every ADC sample, one trace per event.\n\n"
+            "Each event integrates from its own preceding excitation. Gamma is already baked\n"
+            "into the Hz/m gradients, so this is the integral of G dt directly.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(t, kx, ky, kz)` per ADC event.")
+        .def(
+            "adc_kspace_flat",
+            [](const s2w::SequenceSource& s) { return flat_to_py(s.adc_kspace_flat()); },
+            "Whole-sequence ADC k-space as flat arrays -- the fast path for large sequences.\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple\n"
+            "    `(t, kx, ky, kz, offsets)`. `offsets` are cumulative event boundaries, so\n"
+            "    `offsets[0] == 0`, `offsets[-1] == len(t)`, and event `e` is\n"
+            "    `offsets[e]:offsets[e+1]`. Recover the per-event split with\n"
+            "    `np.split(kx, offsets[1:-1])`.")
+        .def(
+            "trigger_gradient_samples",
+            [](const s2w::SequenceSource& s, double delay, double dt, std::size_t n) {
+                std::vector<nb::object> out;
+                for (const s2w::Trace& tr : s.trigger_gradient_samples(delay, dt, n)) {
+                    out.push_back(trace_to_py(tr));
+                }
+                return out;
+            },
+            "delay"_a, "dt"_a, "n"_a,
+            "Gradient values at trigger-based sample points, one trace per trigger.")
+        .def(
+            "trigger_kspace",
+            [](const s2w::SequenceSource& s, double delay, double dt, std::size_t n) {
+                std::vector<nb::object> out;
+                for (const s2w::Trace& tr : s.trigger_kspace(delay, dt, n)) {
+                    out.push_back(trace_to_py(tr));
+                }
+                return out;
+            },
+            "delay"_a, "dt"_a, "n"_a,
+            "k-space at trigger-based sample points, integrated from each trigger.")
+        .def(
+            "trigger_kspace_flat",
+            [](const s2w::SequenceSource& s, double delay, double dt, std::size_t n) {
+                return flat_to_py(s.trigger_kspace_flat(delay, dt, n));
+            },
+            "delay"_a, "dt"_a, "n"_a,
+            "Trigger-based k-space as flat arrays. See `adc_kspace_flat`.")
+        .def(
+            "gradients_dense",
+            [](const s2w::SequenceSource& s, double raster) {
+                return trace_to_py(s.gradients_dense(raster));
+            },
+            "raster"_a,
+            "All three gradient axes on a uniform raster over `[0, duration]`.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "raster : float\n"
+            "    Sample spacing (s).\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple\n"
+            "    `(t, gx, gy, gz)`. The last sample is at or past `duration`.")
+        .def(
+            "gradient_axis_dense",
+            [](const s2w::SequenceSource& s, const std::string& axis, double raster) {
+                auto tv = s.gradient_axis_dense(axis_from_str(axis), raster);
+                return nb::make_tuple(secs_array(tv.first), to_numpy(std::move(tv.second)));
+            },
+            "axis"_a, "raster"_a,
+            "One gradient axis on a uniform raster over `[0, duration]`.\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple\n"
+            "    `(t, values_hz_per_m)`.");
+
+    nb::class_<s2w::Sampler>(
+        m, "Sampler",
+        "Precomputed gradient channels and their cumulative moments, for fast repeated\n"
+        "sampling. Build one with `Sequence.sampler()`.\n\n"
+        "Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,\n"
+        "for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape\n"
+        "preserved.")
+        .def(
+            "gradients",
+            [](const s2w::Sampler& s, InAny<double> times) {
+                auto ts = flatten_times<double>(times, ps_of_secs);
+                s2w::Trace tr = s.gradients(ts.first);
+                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                                      reshape_like(std::move(tr.y), ts.second),
+                                      reshape_like(std::move(tr.z), ts.second));
+            },
+            "times"_a,
+            "Gradient values (Hz/m) at `times`, interpolated between corners.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "times : ndarray\n"
+            "    Query times: float64 seconds, or int64 picoseconds taken verbatim. Any shape.\n"
+            "    A non-decreasing array takes a single forward sweep per axis; otherwise it is a\n"
+            "    binary search per point.\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple of ndarray\n"
+            "    `(gx, gy, gz)`, each shaped like `times`.")
+        .def(
+            "gradients",
+            [](const s2w::Sampler& s, InAny<std::int64_t> times) {
+                auto ts = flatten_times<std::int64_t>(times, ps_of_raw);
+                s2w::Trace tr = s.gradients(ts.first);
+                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                                      reshape_like(std::move(tr.y), ts.second),
+                                      reshape_like(std::move(tr.z), ts.second));
+            },
+            "times"_a, "As above, with query times given as exact int64 picoseconds.")
+        .def(
+            "kspace",
+            [](const s2w::Sampler& s, InAny<double> times, double reference) {
+                auto ts = flatten_times<double>(times, ps_of_secs);
+                s2w::Trace tr = s.kspace(ts.first, s2w::Ps::from_secs(reference));
+                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                                      reshape_like(std::move(tr.y), ts.second),
+                                      reshape_like(std::move(tr.z), ts.second));
+            },
+            "times"_a, "reference"_a,
+            "k-space (1/m) at `times`, integrating each gradient from `reference`.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "times : ndarray\n"
+            "    Query times (float64 seconds or int64 picoseconds). Any shape.\n"
+            "reference : float\n"
+            "    Integration start (s) -- an excitation center for an ADC readout, or the\n"
+            "    trigger time for an external measurement.\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple of ndarray\n"
+            "    `(kx, ky, kz)`, each shaped like `times`.")
+        .def(
+            "kspace",
+            [](const s2w::Sampler& s, InAny<std::int64_t> times, std::int64_t reference) {
+                auto ts = flatten_times<std::int64_t>(times, ps_of_raw);
+                s2w::Trace tr = s.kspace(ts.first, s2w::Ps(reference));
+                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                                      reshape_like(std::move(tr.y), ts.second),
+                                      reshape_like(std::move(tr.z), ts.second));
+            },
+            "times"_a, "reference"_a,
+            "As above, with times and reference given as exact int64 picoseconds.")
+        .def(
+            "kspace_flat",
+            [](const s2w::Sampler& s, In<double> times, In<std::int64_t> offsets,
+               In<double> references) {
+                std::vector<s2w::Ps> t;
+                t.reserve(times.shape(0));
+                for (std::size_t i = 0; i < times.shape(0); ++i) {
+                    t.push_back(s2w::Ps::from_secs(times(i)));
+                }
+                std::vector<std::size_t> off;
+                off.reserve(offsets.shape(0));
+                for (std::size_t i = 0; i < offsets.shape(0); ++i) {
+                    off.push_back(static_cast<std::size_t>(offsets(i)));
+                }
+                std::vector<s2w::Ps> refs;
+                refs.reserve(references.shape(0));
+                for (std::size_t i = 0; i < references.shape(0); ++i) {
+                    refs.push_back(s2w::Ps::from_secs(references(i)));
+                }
+                s2w::FlatK k = s.kspace_flat(t, off, refs);
+                return nb::make_tuple(to_numpy(std::move(k.kx)), to_numpy(std::move(k.ky)),
+                                      to_numpy(std::move(k.kz)));
+            },
+            "times"_a, "offsets"_a, "references"_a,
+            "Batched k-space over many events in one call, returning flat arrays.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "times : ndarray of float64\n"
+            "    All events' query times (s), concatenated.\n"
+            "offsets : ndarray of int64\n"
+            "    Cumulative event boundaries, length `len(references) + 1`: event `e` is\n"
+            "    `times[offsets[e]:offsets[e+1]]`.\n"
+            "references : ndarray of float64\n"
+            "    Per-event integration start (s).\n\n"
+            "Returns\n"
+            "-------\n"
+            "tuple of ndarray\n"
+            "    `(kx, ky, kz)`, each the length of `times`. Reuses the one prebuilt sampler, so\n"
+            "    this is the fast path for whole-sequence k-space and for delay sweeps.");
 
     m.def("parse_shapes", &parse_shapes, "path"_a,
           "Dump the `[SHAPES]` library of a `.seq` file.\n\n"
