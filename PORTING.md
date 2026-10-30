@@ -315,14 +315,42 @@ Two workflows under `.github/workflows/`.
 
 | job | what it proves |
 |---|---|
-| `core` (linux-gcc, macos-clang, windows-msvc) | the core library compiles and its 7 ctest suites pass on three toolchains, with no Python involved (`-DS2W_BUILD_MODULE=OFF`) |
+| `core` (linux-gcc, macos-clang arm64 and x86_64, windows-msvc) | the core library compiles and its 7 ctest suites pass on four toolchains, with no Python involved (`-DS2W_BUILD_MODULE=OFF`) |
 | `package` (3 platforms, 3.10 and 3.13) | the bindings compile, nanobind's stub generation runs, the wheel installs, and it imports and computes from outside the source tree |
-| `sdist` | the sdist carries `extern/fast_float`, and builds and installs from source alone |
+| `sdist` | the sdist carries `extern/fast_float`, passes `twine check`, and builds and installs from source alone |
 
-`wheels.yml`, on a `v*` tag or from the Actions tab: the full cibuildwheel matrix, 25 wheels —
-CPython 3.10 to 3.14 on Linux x86_64, macOS x86_64 and arm64, and Windows x64. It is not on every
-push because it takes tens of minutes and `core` plus `package` already catch a toolchain break;
-run it by hand the first time, since **no non-Windows compiler has ever built this code**.
+`wheels.yml`, on a `v*` tag, from the Actions tab, or on a pull request that edits the workflow or
+`pyproject.toml`: the full cibuildwheel matrix, 25 wheels — CPython 3.10 to 3.14 on Linux x86_64,
+macOS x86_64 and arm64, and Windows x64, five per runner. It is not on every push because it takes
+tens of minutes and `core` plus `package` already catch a toolchain break; run it by hand the
+first time, since **no non-Windows compiler has ever built this code**.
+
+**Both macOS architectures are built natively**, one runner each (`macos-latest` for arm64,
+`macos-15-intel` for x86_64), rather than cross-compiling x86_64 from the Apple Silicon runner.
+That is the difference between a wheel that is checked to build and one that is checked to run:
+cibuildwheel's `test-command` and nanobind's stub generation both need to import the module they
+just built, so neither happens for a cross-compiled wheel. `archs = ["auto"]` is what selects
+this; listing both architectures on one runner is what would cross-compile.
+
+**Hardening, which is mostly about what a workflow is allowed to do.** Both files declare
+`permissions: {}` at the top and re-grant `contents: read` per job, so a compromised step cannot
+write to the repository; `actions/checkout` runs with `persist-credentials: false`, so the token
+is not left in `.git/config` where a later step or a build dependency could use it; and every job
+has a `timeout-minutes`, which on a private repository is the difference between a hung build
+costing six minutes and six hours of quota.
+
+**`.github/dependabot.yml` exists because the pins went stale silently.** The first version of
+these workflows pinned `actions/checkout@v4`, `setup-python@v5` and `upload-artifact@v4`; current
+is v7, v7 and v7, with `download-artifact` at v8. Nothing was broken — GitHub still ships patches
+to the old major lines, and released one for every line from v2 to v7 on the same day in July
+2026 — but a pinned tag keeps working indefinitely while quietly ceasing to receive fixes, and
+eventually runs on a Node runtime being retired. One grouped weekly PR turns "stale forever" into
+"a diff to review". `pypa/cibuildwheel` stays pinned to an exact patch deliberately: a bump
+changes which interpreters and platform tags come out, and v4 made `delvewheel` the default
+Windows repair step and `abi3audit` a default post-repair audit. Neither should matter here —
+nothing links a non-system DLL and nothing claims the stable ABI — but they are defaults
+inherited by pinning v4, and so the first place to look if a Windows wheel build fails in the
+repair step rather than in the compile.
 
 **What CI cannot check, which is most of the suite.** The corpus is ~1.6 GB and lives nowhere near
 a runner, so `test-h5`, `test-invariants` and the per-dataset half of `test-golden` all skip there
@@ -345,15 +373,45 @@ passing vacuously — the one guard that stops "everything skipped" from reading
 - **Nothing throws one any more.** `build_grad_piece` was the only call that could, and it now
   uses `std::get_if`, which is header-only and unconditionally available. The variant has two
   alternatives and the `Trap` one returns earlier, so the null branch is unreachable.
-- **x86_64 is cross-compiled** from the Apple Silicon runner. `CMakeLists.txt` already skips stub
-  generation when `CMAKE_OSX_ARCHITECTURES` differs from `uname -m`, because it cannot import a
-  foreign-architecture module; cibuildwheel likewise skips `test-command` for that wheel. So an
-  x86_64 wheel is checked to *build*, not to run.
+- **x86_64 is built natively**, on `macos-15-intel`, so both macOS wheels are imported and run.
+  The cross-compilation path still exists for anyone who wants it locally — `CMakeLists.txt`
+  skips stub generation when `CMAKE_OSX_ARCHITECTURES` differs from `uname -m`, because it cannot
+  import a foreign-architecture module — but CI no longer takes it. (`macos-13` was the old Intel
+  runner label and is retired; `macos-15-intel` replaces it.)
 - **On first contact, expect the golden snapshots to be the open question.** They are bit-exact
   and were written by MSVC on x86-64; a different compiler may contract a multiply-add differently
   and move the last bit. Run with `S2W_GOLDEN_RTOL=1e-12` on a machine with the corpus: a pass
   says the difference is float noise and the snapshots can be regenerated there. That fallback
   only sees the statistics and the probes, so it is for bring-up, not everyday use.
+
+### What CI deliberately does not do
+
+- **No free-threaded wheels.** cibuildwheel v4 builds CPython 3.14 free-threaded without an
+  enable flag, so `cp314t` would appear on its own; the `build` selector (`cp314-*`) does not
+  match `cp314t-*`, which is why 25 identifiers come out rather than 30. Taking them would mean
+  declaring `nb::mod_gil_not_used()` in the module, since without it a free-threaded interpreter
+  re-enables the GIL at import and warns. A search for mutable globals across `src/` and
+  `bindings/` finds none — the readers and samplers hold their state in the objects they return
+  — so this looks takeable rather than hard, but it is a claim about thread safety and should be
+  made deliberately rather than inherited from a matrix.
+- **No lint or format gate.** There is no `ruff`, `black` or `pre-commit` configuration in the
+  repository, so there is nothing for a lint job to run. Adding one is a policy decision with a
+  one-time cleanup attached, not a CI fix.
+- **No byte comparison of the committed stub.** `seq2waveform/_core.pyi` is generated by nanobind
+  and committed, so it can go stale, but the check belongs locally rather than in CI:
+  `pip install .` resolves `nanobind>=3.0,<4` to whatever is newest on PyPI, so a byte comparison
+  there would flap on a nanobind release instead of on a real change. `pixi run check-stub`
+  (wired into `pixi run test`) does it where `pixi.lock` pins the generator, and `.gitattributes`
+  pins the file to LF so the comparison means the same thing on every platform. `wheels.yml`
+  keeps the broader `git diff --exit-code` after a wheel build, which is about a build dirtying
+  the checkout rather than about the stub specifically.
+- **No publishing.** This project installs from a local conda channel built by
+  `pixi run conda-build`, not from PyPI, so there is no upload job. `wheels.yml` records what one
+  would need — `environment: pypi`, `id-token: write`, `attestations: write`, `actions/attest`
+  and trusted publishing — rather than a long-lived token.
+- **No ARM Linux or ARM Windows wheels.** `ubuntu-24.04-arm` and `windows-11-arm` are free for
+  public repositories and nothing in the code is architecture-specific; it is a question of what
+  is worth shipping, not of whether it would work.
 
 ## Layout
 
@@ -382,9 +440,11 @@ tests/
 scripts/
   bench.py                     timings through the Python API
   gen_golden.py                rewrites tests/golden/*.json
-.github/workflows/
-  ci.yml                       core + bindings on 3 toolchains, every push
-  wheels.yml                   the full cibuildwheel matrix, on a tag or by hand
+.github/
+  workflows/ci.yml             core + bindings on 4 toolchains, every push
+  workflows/wheels.yml         the full cibuildwheel matrix, on a tag or by hand
+  dependabot.yml               one grouped weekly PR for the action pins
+.gitattributes                 LF for the generated, committed .pyi
 recipe.yaml                    wraps a built wheel into a conda package
 ```
 

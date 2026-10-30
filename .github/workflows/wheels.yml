@@ -2,17 +2,20 @@
 # Windows x64. See `[tool.cibuildwheel]` in pyproject.toml for the build selection, the skips and
 # the per-architecture macOS deployment targets.
 #
-# Not on every push, deliberately. It is fifteen-odd builds per platform and takes tens of
-# minutes, while `core` and `package` in ci.yml already compile the core and the bindings on all
-# three toolchains within a few minutes of a commit. Run this from the Actions tab when the matrix
-# itself is what you want to check -- which includes the first time this is pushed, since no
-# non-Windows compiler has ever built this code -- and on a release tag.
+# Not on every push, deliberately. It is five builds per platform and takes tens of minutes, while
+# `core` and `package` in ci.yml already compile the core and the bindings on all four toolchains
+# within a few minutes of a commit. Run this from the Actions tab when the matrix itself is what
+# you want to check -- which includes the first time this is pushed, since no non-Windows compiler
+# has ever built this code -- and on a release tag. It also runs on a pull request that edits this
+# file, so a change to the matrix is tested by the change itself.
 #
-# macOS x86_64 is cross-compiled from the Apple Silicon runner. Two consequences: CMakeLists.txt
-# skips stub generation for that build (it cannot import a foreign-architecture module), and
-# cibuildwheel skips `test-command` for it, so an x86_64 wheel is checked to build and not to run.
+# Both macOS architectures are built natively, each on its own runner, so cibuildwheel's
+# `test-command` runs for both and every wheel here is executed and not merely built.
+# `macos-15-intel` is the current Intel runner; the old `macos-13` label is retired.
 #
-# To add Linux aarch64, add `ubuntu-24.04-arm` to the matrix -- free for public repositories.
+# To add the remaining native runners, append `ubuntu-24.04-arm` and `windows-11-arm` to the
+# matrix -- free for public repositories, and billed per-minute like any other runner otherwise.
+# Nothing in the code is architecture-specific, so this is a question of what you want to ship.
 
 name: Wheels
 
@@ -20,47 +23,71 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/wheels.yml", "pyproject.toml"]
+
+permissions: {}
 
 concurrency:
-  group: wheels-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  FORCE_COLOR: 3
 
 jobs:
   wheels:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      # Pinned rather than floating: a cibuildwheel bump changes which interpreters and platform
-      # tags come out, which is a release decision. Bump it deliberately.
-      - uses: pypa/cibuildwheel@v4.3.5
-      - uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v7
         with:
-          name: wheels-${{ matrix.os }}
+          persist-credentials: false
+      # Pinned to a patch rather than floating: a cibuildwheel bump changes which interpreters and
+      # platform tags come out, and v4 made delvewheel the default Windows repair step. That is a
+      # release decision, so bump it deliberately. Dependabot will open the PR.
+      - uses: pypa/cibuildwheel@v4.3.5
+      - name: The build must not have written into the source tree
+        # A wheel build that dirties the checkout is building something it will not ship, or
+        # leaving generated files where the next build picks them up. The one file this project
+        # does generate in-tree, seq2waveform/_core.pyi, is committed, so a diff here means it is
+        # stale -- see `pixi run check-stub`.
+        run: git diff --exit-code
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: wheelhouse/*.whl
 
   collect:
     name: collect
     needs: wheels
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: wheelhouse
       - name: What was built
         run: ls -lh wheelhouse/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-all
           path: wheelhouse/*.whl
 
   # Publishing is not wired up: this project installs from a local conda channel built by
-  # `pixi run conda-build` (see recipe.yaml), not from PyPI. If that changes, add a job here
-  # gated on the release tag, using a trusted-publishing `id-token: write` permission and
-  # pypa/gh-action-pypi-publish with the `wheels-all` artifact -- and never a long-lived token.
+  # `pixi run conda-build` (see recipe.yaml), not from PyPI. If that changes, add a job here gated
+  # on `github.event_name == 'release'`, with `environment: pypi` and permissions
+  # `id-token: write` plus `attestations: write`, running actions/attest on the artifacts and then
+  # pypa/gh-action-pypi-publish via trusted publishing -- and never a long-lived token.
