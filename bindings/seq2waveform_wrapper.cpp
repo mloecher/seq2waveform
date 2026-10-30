@@ -207,9 +207,10 @@ void bind_waveform_source(nb::class_<T>& cls) {
     cls.def(
            "gradient",
            [](const T& s, const std::string& axis) {
-               const s2w::PiecewiseLinear g = s.gradient(axis_from_str(axis));
-               std::vector<double> v = g.v;
-               return nb::make_tuple(secs_array(g.t), to_numpy(std::move(v)));
+               // Not `const`: a const local cannot be moved from, so the values would be
+               // copied out rather than handed to numpy -- 21 MB of corners on `cones`.
+               s2w::PiecewiseLinear g = s.gradient(axis_from_str(axis));
+               return nb::make_tuple(secs_array(g.t), to_numpy(std::move(g.v)));
            },
            "axis"_a,
            "Expand one gradient channel to piecewise-linear corners.\n\n"
@@ -230,8 +231,10 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "adc_events",
             [](const T& s) {
+                const std::vector<s2w::AdcEvent> events = s.adc_events();
                 std::vector<nb::object> out;
-                for (const s2w::AdcEvent& e : s.adc_events()) {
+                out.reserve(events.size());
+                for (const s2w::AdcEvent& e : events) {
                     out.push_back(nb::cast(secs_array(e.t)));
                 }
                 return out;
@@ -246,8 +249,10 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "adc_events_meta",
             [](const T& s) {
+                const std::vector<s2w::AdcEvent> events = s.adc_events();
                 std::vector<nb::object> out;
-                for (const s2w::AdcEvent& e : s.adc_events()) {
+                out.reserve(events.size());
+                for (const s2w::AdcEvent& e : events) {
                     out.push_back(nb::make_tuple(secs_array(e.t), e.freq, e.phase));
                 }
                 return out;
@@ -261,8 +266,10 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "triggers",
             [](const T& s) {
+                const std::vector<s2w::TriggerEvent> trgs = s.trigger_events();
                 std::vector<std::tuple<std::uint32_t, double, double>> out;
-                for (const s2w::TriggerEvent& t : s.trigger_events()) {
+                out.reserve(trgs.size());
+                for (const s2w::TriggerEvent& t : trgs) {
                     out.emplace_back(t.channel, t.time.secs(), t.duration.secs());
                 }
                 return out;
@@ -875,10 +882,9 @@ NB_MODULE(_core, m) {
     m.def(
         "read_dsv_pwl",
         [](const std::string& path) {
-            const s2w::DsvChannel ch = s2w::read_dsv_file(path);
-            std::vector<double> v = ch.waveform.v;
-            return nb::make_tuple(secs_array(ch.waveform.t), to_numpy(std::move(v)),
-                                  ch.raster_time, ch.unit);
+            s2w::DsvChannel ch = s2w::read_dsv_file(path);  // see `gradient`: not const, so
+            return nb::make_tuple(secs_array(ch.waveform.t),       // the values move out
+                                  to_numpy(std::move(ch.waveform.v)), ch.raster_time, ch.unit);
         },
         "path"_a,
         "Read a Siemens `.dsv` channel as piecewise-linear corners.\n\n"
@@ -970,8 +976,10 @@ NB_MODULE(_core, m) {
         [](const std::string& inf_path, const std::string& rfd_path) {
             const s2w::Inf inf = s2w::read_inf_file(inf_path);
             const s2w::DsvChannel rfd = s2w::read_dsv_file(rfd_path);
+            const std::vector<s2w::RfEvent> events = inf.rf_events();
             std::vector<std::tuple<double, double, double, double, double, double>> out;
-            for (const s2w::RfEvent& e : inf.rf_events()) {
+            out.reserve(events.size());
+            for (const s2w::RfEvent& e : events) {
                 out.emplace_back(e.center(rfd), e.start, e.duration, e.flip_deg, e.freq,
                                  e.phase_deg);
             }
