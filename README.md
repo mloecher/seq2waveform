@@ -28,6 +28,10 @@ Built with nanobind + scikit-build-core, so the Python type stubs — docstrings
 annotations included — are regenerated from the compiled module on every build and committed, which
 is why an editor can show the full API without building first.
 
+**[USAGE.md](USAGE.md) is the map of the API**: which method to call for which quantity at which
+sampling site, what `gradient_mode` changes (measured), and why GIRF work wants `"dsv"` so that a
+Pulseq `.seq` and a Siemens DSV export land in the same representation.
+
 ## Install
 
 ```bash
