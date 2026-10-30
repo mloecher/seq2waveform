@@ -1,49 +1,30 @@
-"""Independent ground truth: the C++ port against Pulseq's own reference `.h5`.
+"""Ground truth: the library against Pulseq's own reference `.h5`.
 
 Run:  pixi run test-h5
 
-Why this exists separately from `test_parity.py`: every one of those tests compares the port
-against the Rust implementation, so an error the *two ports share* is invisible to all of them.
-The `.h5` is written by Pulseq itself, so it is the only check in the suite that does not depend on
-the Rust code being right. It is a tolerance comparison (1e-4 relative), not an exact one -- the
-two implementations are independent, not bit-compatible -- which is exactly why it cannot replace
-the parity suite either. They answer different questions.
+This is the suite that does not depend on our own arithmetic being right. The `.h5` is written by
+Pulseq itself, from the same `.seq`, so it is an outside answer -- which is why it is the one to
+run after touching a waveform, and why it survived the cut-over from the port's differential suite
+unchanged. It is a tolerance comparison (1e-4 relative), not an exact one: Pulseq and this library
+are independent implementations, not bit-compatible.
 
-Mirrors `scripts/test_datasets.py` in the Rust repo, including its orientation handling and its
-threshold, so a failure here can be compared directly against the Rust result.
+`test_dsv_gradients_match_h5` is the other half of the project's actual question -- that what the
+scanner played matches what Pulseq asked for -- and is the only test here that reads the Siemens
+side. It came from the Rust repo's `scripts/test_datasets.py`, whose other three tests are the
+three above it, already present.
+
+See `tests/conftest.py` for how the corpus is found.
 """
 
 import functools
-import os
-from pathlib import Path
 
 import numpy as np
 import pytest
+from conftest import TESTDATA, datasets, requires_corpus, seq_path
 
-import seq2waveform_cpp as cpp
+import seq2waveform as s2w
 
 h5py = pytest.importorskip("h5py", reason="h5py is needed to read the reference datasets")
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _resolve(raw: str) -> Path:
-    p = Path(raw)
-    return p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
-
-
-RUST_REPO = _resolve(os.environ.get("S2W_RUST_REPO", "../seq2waveform"))
-TESTDATA = _resolve(os.environ.get("S2W_TESTDATA", str(RUST_REPO / "testdata")))
-
-
-def _datasets():
-    if not TESTDATA.exists():
-        return []
-    return sorted(
-        d.name
-        for d in TESTDATA.iterdir()
-        if d.is_dir() and (d / f"{d.name}.seq").exists() and (d / f"{d.name}.h5").exists()
-    )
 
 
 def _orient(a, ncol):
@@ -55,13 +36,11 @@ def _orient(a, ncol):
 @functools.lru_cache(maxsize=None)
 def _seq(name):
     """Parse a dataset's .seq once and reuse it across tests."""
-    return cpp.Sequence(str(TESTDATA / name / f"{name}.seq"))
+    return s2w.Sequence(seq_path(name))
 
 
-DATASETS = _datasets()
-pytestmark = pytest.mark.skipif(
-    not DATASETS, reason=f"no .seq/.h5 dataset pairs under {TESTDATA} (set S2W_TESTDATA)"
-)
+DATASETS = datasets(".seq", ".h5")
+pytestmark = requires_corpus(DATASETS)
 
 
 @pytest.fixture(params=DATASETS)
@@ -115,3 +94,55 @@ def test_adc_times_match_h5(name):
     assert st.size == ht.size, f"{name}: {st.size} ADC samples vs h5 {ht.size}"
     if st.size:
         assert np.abs(st - ht).max() < 1e-6, f"{name}: ADC times differ"
+
+
+def test_dsv_gradients_match_h5(name):
+    """The Siemens DSV gradient agrees with the Pulseq h5 -- the project's actual question.
+
+    The two live in different frames. The DSV is what the scanner played, in mT/m on a 10 us grid
+    whose samples sit at interval centers, starting after an INF-encoded lead-in. The h5 is what
+    Pulseq asked for, in Hz/m at t=0. So the h5 is converted with the Siemens gamma and shifted by
+    the lead-in, and the two are compared on the DSV's own grid.
+
+    The lead-in comes from the INF (the start of event block 1), never from a fit -- a fitted shift
+    would absorb exactly the error this test exists to find. The assertion on its magnitude is
+    there because a wrong lead-in otherwise shows up only as a small amplitude mismatch.
+
+    Compared on the 10 us DSV grid rather than the h5's: the h5 carries extra 5 us corners from
+    Pulseq's `restoreAdditionalShapeSamples`, which is reconstruction detail Siemens never had, so
+    comparing there would hold the scanner to a resolution it was never given.
+    """
+    dsv = TESTDATA / name / "dsv"
+    if not dsv.is_dir():
+        pytest.skip("dataset has no dsv/ folder")
+    inf = sorted(dsv.glob("*_INF.dsv"))
+    if not inf:
+        pytest.skip("dataset has no INF channel")
+
+    lead = s2w.inf_lead_in(str(inf[0]))  # seconds
+    assert 0.9e-3 < lead < 1.2e-3, f"{name}: unexpected lead-in {lead * 1e6:.1f} us"
+
+    with h5py.File(TESTDATA / name / f"{name}.h5") as f:
+        axes = [ax for ax in "xyz" if f"g{ax}" in f]
+        truth = {ax: _orient(f[f"g{ax}"][()], 2) for ax in axes}
+
+    compared = 0
+    for ax in axes:
+        hits = sorted(dsv.glob(f"*_GR{ax.upper()}.dsv"))
+        if not hits:
+            continue
+        dt, dv, raster, _ = s2w.read_dsv_pwl(str(hits[0]))
+        dt, dv = np.asarray(dt), np.asarray(dv)
+        if dt.size < 2:
+            continue
+        ht = truth[ax][:, 0]
+        hv = truth[ax][:, 1] / s2w.SCAN_GAMMA * 1e3  # mT/m, Pulseq frame
+        grid = np.arange(dt[0], dt[-1] + raster, raster)
+        d = np.interp(grid, dt, dv)
+        h = np.interp(grid - lead, ht, hv, left=0.0, right=0.0)
+        rel = np.abs(d - h).max() / max(np.abs(hv).max(), 1e-3)
+        assert rel < 1e-3, f"{name} g{ax} DSV vs h5: relative max diff {rel:.2e}"
+        compared += 1
+
+    if compared == 0:
+        pytest.skip("no gradient channel present in both the h5 and the dsv/ folder")

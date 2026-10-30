@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(seq2waveform_cpp LANGUAGES CXX)
+project(seq2waveform LANGUAGES CXX)
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 
@@ -15,7 +15,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/src/seq2waveform_core.cmake)  # -> seq2wavef
 nanobind_add_module(_core bindings/seq2waveform_wrapper.cpp)
 target_link_libraries(_core PRIVATE seq2waveform_core)
 
-install(TARGETS _core LIBRARY DESTINATION seq2waveform_cpp)
+install(TARGETS _core LIBRARY DESTINATION seq2waveform)
 
 # Stub generation imports the built module, so it only works for native builds. Skip when
 # cross-compiling on macOS (e.g. building x86_64 on an arm64 runner).
@@ -36,7 +36,7 @@ endif()
 if(_generate_stubs)
     nanobind_add_stub(_core_stub
         MODULE _core
-        OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/seq2waveform_cpp/_core.pyi"
+        OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/seq2waveform/_core.pyi"
         PYTHON_PATH "$<TARGET_FILE_DIR:_core>"
         DEPENDS _core
     )

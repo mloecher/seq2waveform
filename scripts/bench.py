@@ -1,34 +1,41 @@
-"""Time the public API on the real datasets, optionally against the Rust implementation.
+"""Time the public API on the real datasets.
 
-Neither implementation caches anything, so every call below recomputes from the parsed blocks --
-which is what makes the numbers comparable and also what makes repeated calls honest.
+Nothing is cached internally, so every call below recomputes from the parsed blocks -- which is
+what makes repeated calls honest, and what makes these numbers the cost of the work itself.
+
+For a breakdown with no Python boundary in the way, build `tests/bench_expand.cpp` instead
+(`pixi run test-cpp` builds it; see PORTING.md's performance sections). Use that one before
+blaming the bindings for a slow call: during the port the gap was in the core every time.
 
 Usage
 -----
-    pixi run python scripts/bench.py                 # C++ only
-    pixi run python scripts/bench.py --compare-rust  # alongside the Rust oracle
-    pixi run python scripts/bench.py --only cones girf
+    pixi run bench
+    pixi run python scripts/bench.py --only cones girf --repeats 8
+    pixi run python scripts/bench.py --dsv
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
+import sys
 import time
 
-import seq2waveform_cpp as cpp
+# The corpus lives outside the repo and conftest.py owns finding it; reuse that rather than
+# duplicating the fallback chain here.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tests"))
+from conftest import TESTDATA, datasets, dsv_paths, seq_path  # noqa: E402
 
-TESTDATA = pathlib.Path(os.environ.get("S2W_RUST_REPO", "../seq2waveform")) / "testdata"
-DATASETS = ("cones", "epi", "epi_fatsat", "girf", "sync_osc")
+import seq2waveform as s2w  # noqa: E402
+
 DENSE_RASTER = 1e-4
 
 
 def timed(fn, repeats):
     """Best-of-`repeats` wall time in ms, plus whatever the call returned.
 
-    Minimum rather than mean: both implementations are deterministic, so spread here is scheduler
-    noise, and the fastest run is the closest to the cost of the work itself.
+    Minimum rather than mean: the computation is deterministic, so spread here is scheduler noise
+    and the fastest run is the closest to the cost of the work.
     """
     best, out = float("inf"), None
     for _ in range(repeats):
@@ -39,7 +46,7 @@ def timed(fn, repeats):
 
 
 def size_of(out):
-    """A one-number summary of a result, so the two sides can be shown to have done equal work."""
+    """A one-number summary of a result, so a run can be seen to have done the expected work."""
     if out is None:
         return ""
     if hasattr(out, "size"):
@@ -51,10 +58,10 @@ def size_of(out):
     return ""
 
 
-def seq_cases(mod, path, repeats):
+def seq_cases(path, repeats):
     """Parse is timed on its own; the rest reuse one Sequence, which caches nothing."""
-    yield "Sequence(path)", timed(lambda: mod.Sequence(path), repeats)
-    seq = mod.Sequence(path)
+    yield "Sequence(path)", timed(lambda: s2w.Sequence(path), repeats)
+    seq = s2w.Sequence(path)
     yield "gradient('x')", timed(lambda: seq.gradient("x"), repeats)
     yield "adc_times()", timed(lambda: seq.adc_times(), repeats)
     yield "adc_kspace_flat()", timed(lambda: seq.adc_kspace_flat(), max(1, repeats // 2))
@@ -63,70 +70,43 @@ def seq_cases(mod, path, repeats):
     )
 
 
-def dsv_paths(name):
-    d = TESTDATA / name / "dsv"
-    out = []
-    for suffix in ("GRX", "GRY", "GRZ", "RFD", "INF"):
-        hits = sorted(d.glob(f"*_{suffix}.dsv"))
-        if not hits:
-            return None
-        out.append(str(hits[0]))
-    return tuple(out)
-
-
-def dsv_cases(mod, paths, repeats):
-    yield "DsvSet(...)", timed(lambda: mod.DsvSet(*paths), repeats)
-    s = mod.DsvSet(*paths)
+def dsv_cases(paths, repeats):
+    yield "DsvSet(...)", timed(lambda: s2w.DsvSet(*paths), repeats)
+    s = s2w.DsvSet(*paths)
     yield "  .gradient('x')", timed(lambda: s.gradient("x"), repeats)
     yield "  .adc_kspace_flat()", timed(lambda: s.adc_kspace_flat(), max(1, repeats // 2))
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--compare-rust", action="store_true", help="also time the Rust implementation")
+    ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", nargs="*", default=None, metavar="DATASET")
-    ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--repeats", type=int, default=3, help="heavy calls get half this many")
     ap.add_argument("--dsv", action="store_true", help="include the DsvSet cases (slow)")
     args = ap.parse_args()
 
-    rust = None
-    if args.compare_rust:
-        import seq2waveform as rust  # noqa: PLC0415  -- optional, and gone after the cut-over
-
-    names = args.only or DATASETS
-    hdr = f"{'':34s} {'C++ ms':>10s}"
-    if rust:
-        hdr += f" {'Rust ms':>10s} {'C++/Rust':>9s}"
-    hdr += "   result"
+    names = args.only or datasets(".seq")
+    if not names:
+        print(f"no datasets found under {TESTDATA} (set S2W_TESTDATA)")
+        return 1
 
     for name in names:
-        seq = TESTDATA / name / f"{name}.seq"
-        if not seq.exists():
+        path = pathlib.Path(seq_path(name))
+        if not path.exists():
             print(f"\n{name}: no .seq, skipped")
             continue
-        print(f"\n=== {name}  ({seq.stat().st_size / 1e6:.1f} MB) ===")
-        print(hdr)
+        print(f"\n=== {name}  ({path.stat().st_size / 1e6:.1f} MB) ===")
+        print(f"{'':34s} {'ms':>10s}   result")
 
-        cases = [list(seq_cases(cpp, str(seq), args.repeats))]
-        if rust:
-            cases.append(list(seq_cases(rust, str(seq), args.repeats)))
-
+        cases = list(seq_cases(str(path), args.repeats))
         if args.dsv:
             paths = dsv_paths(name)
             if paths:
-                cases[0] += list(dsv_cases(cpp, paths, 1))
-                if rust:
-                    cases[1] += list(dsv_cases(rust, paths, 1))
+                cases += list(dsv_cases(paths, 1))
 
-        for i, (label, (c_ms, c_out)) in enumerate(cases[0]):
-            line = f"{label:34s} {c_ms:10.1f}"
-            if rust:
-                _, (r_ms, r_out) = cases[1][i]
-                line += f" {r_ms:10.1f} {c_ms / r_ms:8.2f}x"
-                if size_of(c_out) != size_of(r_out):
-                    line += f"  !! sizes differ: {size_of(c_out)} vs {size_of(r_out)}"
-            print(f"{line}   {size_of(c_out)}")
+        for label, (ms, out) in cases:
+            print(f"{label:34s} {ms:10.1f}   {size_of(out)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

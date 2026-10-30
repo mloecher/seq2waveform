@@ -1,7 +1,7 @@
 """
-Compiled core of the seq2waveform C++ port.
+Compiled core of seq2waveform.
 
-Import the public API from the `seq2waveform_cpp` package rather than from here.
+Import the public API from the `seq2waveform` package rather than from here.
 """
 
 from typing import Annotated, overload
@@ -159,28 +159,6 @@ def parse_file(path: str) -> int:
     ------
     ValueError
         If a line is malformed; the message names the source line.
-    """
-
-def parse_model(path: str) -> dict:
-    """
-    Dump a parsed `.seq` model as plain Python data.
-
-    Port scaffolding, not public API: it exists so the port's parity suite can compare the
-    parsed sequence against the Rust implementation field by field. Shapes are excluded --
-    see `parse_shapes`.
-
-    Parameters
-    ----------
-    path : str
-        Path to a Pulseq `.seq` file.
-
-    Returns
-    -------
-    dict
-        Keys `version`, `definitions`, `signature`, `blocks`, `rf`, `traps`, `arbs`,
-        `adc`, `triggers`, `ext_nodes` and `ext_type_names`. The event libraries are
-        `{id: tuple}` in the field order of the corresponding struct; `blocks` is a list
-        of `(num, duration_s, rf, gx, gy, gz, adc, ext)`. All times are in seconds.
     """
 
 class Sequence:
@@ -872,23 +850,4 @@ def inf_lead_in(path: str) -> float:
     -------
     float
         Lead-in time (s), or 0.0 if the INF has no second block.
-    """
-
-def parse_shapes(path: str) -> dict:
-    """
-    Dump the `[SHAPES]` library of a `.seq` file.
-
-    Port scaffolding, like `parse_model`: kept separate because the arrays are large enough
-    that round-tripping them through Python lists would dominate the parity run.
-
-    Parameters
-    ----------
-    path : str
-        Path to a Pulseq `.seq` file.
-
-    Returns
-    -------
-    dict
-        `{shape_id: (num_samples, raw, decompressed)}`, where `raw` is the on-disk (often
-        run-length-compressed) data and `decompressed` is the expanded sample vector.
     """

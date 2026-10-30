@@ -1,16 +1,24 @@
-# Porting seq2waveform from Rust to C++
+# seq2waveform: design notes, hard-won edge cases, and the port that produced them
 
-Reference for the port, and the kickoff prompt to start it.
+What the port left behind, and the reference worth reading before changing anything here.
 
-This is its own project. The Rust implementation lives in a separate checkout — `$S2W_RUST_REPO`,
-defaulting to the sibling `../seq2waveform` — and stays working and installed throughout: it is the
-oracle every ported module is checked against, and it owns the test corpus. Paths below of the form
-`crates/...`, `python/...`, `scripts/...` or `testdata/...` are relative to *that* repo; everything
-else is relative to this one.
+This library began as a C++ port of a Rust implementation. The Rust crate was the oracle: every
+module was checked for bit-exact equality against it on real data rather than against re-derived
+ground truth, which is how 284 differential tests came to exist. At cut-over the crate was retired
+and those tests went with it — they compared against something that no longer runs — so what
+remains is this document plus the suites described under **Build and test**.
 
-## Why
+Read it for: the edge cases each implementation earned the hard way (**Edge cases and conventions**
+is the long section, and the valuable one), why the validation thresholds are the numbers they are,
+the measured performance work, and the known gaps that are still open.
 
-- **Stub generation is a build step.** `nanobind_add_stub` regenerates `seq2waveform_cpp/_core.pyi`
+Paths of the form `crates/...`, `python/...` or `scripts/test_datasets.py` refer to the retired Rust
+checkout, kept in the text where the history explains a decision. Everything else is relative to
+this repo.
+
+## Why C++ at all
+
+- **Stub generation is a build step.** `nanobind_add_stub` regenerates `seq2waveform/_core.pyi`
   from the built module on every build, docstrings and `NDArray` annotations included. The Rust
   side needs PyO3 ≥ 0.29 plus an inline-module restructure to get the same thing, and even then the
   numpy annotations depend on rust-numpy implementing the introspection traits.
@@ -72,13 +80,17 @@ Built and verified:
 - `tests/test_pwl.cpp` — the Rust unit tests from `time.rs` and `pwl.rs`, ported.
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
-- `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  284 of them as of step 7. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
-  shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
-  ADC sample times, 4,601 RF events and 4,261 triggers; step 4 added 27.9 M flat k-space points.
-  All exactly equal. A one-ULP perturbation of a single corner value does fail the suite, and
-  shifting a k-space reference by 10 µs does change the result -- worth re-checking whenever a new
-  comparison is added, because an assertion that cannot fail is worse than no assertion.
+- `tests/test_invariants.py` — internal invariants on the real datasets: the two sampling paths
+  against each other, the flat and per-event k-space against each other, the corner form against
+  the dense form, and the `.seq` route against the DSV route. Exact where both sides are our own
+  arithmetic; a tolerance only for the last, which crosses two file formats.
+  **This is what is left of the differential suite** — the tests in it that never needed the
+  oracle. For the record, that suite ran 284 comparisons: 25,300 blocks, 2,051 shapes and 1.36 M
+  decompressed shape samples; 24.8 M gradient corners across three modes and three axes; 27.3 M ADC
+  sample times, 4,601 RF events, 4,261 triggers; 27.9 M flat k-space points. All exactly equal.
+  A one-ULP perturbation of a single corner value did fail it, and shifting a k-space reference by
+  10 µs did change the result — worth re-checking whenever a new comparison is added anywhere,
+  because an assertion that cannot fail is worse than no assertion.
 - `tests/test_h5.py` — **the only check that does not depend on the Rust implementation being
   right.** Everything above compares the two ports, so an error they *share* is invisible to all
   of it; the `.h5` is written by Pulseq itself. 15 tests at a 1e-4 relative bar, and the worst
@@ -108,7 +120,7 @@ not a defect.
 > **Step 3 was ported from an uncommitted change, confirmed as intended.**
 > `crates/seq2waveform/src/waveform.rs` had an uncommitted fix to `resample_at_centers` (the
 > lead-in/lead-out centers, so a DSV channel reads zero outside its range) when this port was
-> written, and `build-oracle` builds the oracle from the working tree — so that is the behaviour
+> written, and the oracle was built from that working tree — so that is the behaviour
 > the C++ side matches and the parity suite pins. The author has confirmed it is the wanted
 > behaviour. If it is ever reverted or reworked in the Rust repo, DSV-mode parity will break here
 > and the failure will look like a C++ bug.
@@ -199,13 +211,19 @@ src/
   *.cpp                        core implementation
 bindings/
   seq2waveform_wrapper.cpp     the only file that may mention nanobind
-seq2waveform_cpp/
+seq2waveform/
   __init__.py                  re-exports from ._core
   _core.pyi                    GENERATED on every build — never edit by hand
   py.typed
 tests/
-  test_pwl.cpp                 C++ core tests (ctest)
-  test_parity.py               C++ vs Rust on the Rust repo's datasets
+  conftest.py                  finds the test corpus; shared by both Python suites
+  test_pwl.cpp                 C++ core tests (ctest), one per module
+  test_h5.py                   against Pulseq's own reference files
+  test_invariants.py           our own paths against each other
+  bench_expand.cpp             native timings, no Python boundary
+scripts/
+  bench.py                     timings through the Python API
+recipe.yaml                    wraps a built wheel into a conda package
 ```
 
 Environment and tasks live in `pyproject.toml` under `[tool.pixi.*]` rather than a separate
@@ -218,31 +236,32 @@ plain C++ (tests, gropt, a future CLI).
 ## Build and test
 
 ```bash
-pixi run build          # editable install + regenerate _core.pyi
-pixi run test-cpp       # C++ core tests via ctest
-pixi run build-oracle   # install the Rust implementation into this environment
-pixi run test-parity    # C++ vs Rust on every dataset (builds both first)
-pixi run test           # test-cpp + test-parity
+pixi run build            # editable install + regenerate _core.pyi
+pixi run test-cpp         # C++ core tests via ctest
+pixi run test-h5          # against Pulseq's own reference .h5, at 1e-4
+pixi run test-invariants  # our own paths against each other, on the real datasets
+pixi run test             # all three
+pixi run bench            # timings on the real datasets
+pixi run build-wheel      # dist/*.whl
+pixi run conda-build      # wrap that wheel into a local conda channel under output/
 ```
 
-And in the Rust repo, which must keep passing untouched:
-
-```bash
-pixi run test           # the Rust suite vs the h5 and the DSV
-```
+`test-h5` and `test-invariants` are complements and neither subsumes the other: the first is an
+outside answer but a tolerance one on three quantities, the second is exact but grades this code
+against itself. Run both.
 
 `cmake` and `nanobind` come from the pixi environment; MSVC comes from the system Visual Studio
 install, as in gropt. `ninja` is deliberately **not** a dependency — without it CMake uses the
 Visual Studio generator, which finds MSVC without `vcvars` on `PATH`.
 
-`maturin` and `h5py` are in this environment only for the port: the first builds the oracle from
-the Rust checkout, the second is for the dataset suite once it moves here. Both go at cut-over.
+`h5py` is a dev dependency, for `test-h5` only — the package itself needs nothing but numpy.
 
 ## The test corpus: matched `.seq` / `.h5` / `.dsv`
 
-The corpus lives in the Rust checkout at `$S2W_RUST_REPO/testdata` (override with `S2W_TESTDATA`).
-It is gitignored there, so it exists on this machine only — it is not in either repository, and a
-fresh clone has no data.
+`tests/conftest.py` finds the corpus: `S2W_TESTDATA` if set, then `./testdata`, then
+`../seq2waveform/testdata` — the retired Rust checkout that owned it originally, kept as a fallback
+so a machine that has not moved the ~1.6 GB yet still runs. It is gitignored wherever it sits, so
+it exists on this machine only: a fresh clone has no data, and every data-driven test skips.
 
 Five datasets, each a directory named after itself:
 
@@ -373,7 +392,8 @@ be mirrored here as modules land:
 
 For the port itself the bar is **higher**: exact equality against Rust. Both implementations do the
 same arithmetic in the same order on int64 times, so any difference is a porting bug rather than
-float noise. `tests/test_parity.py` asserts `np.array_equal`. If a check genuinely cannot be exact,
+float noise. `tests/test_invariants.py` asserts `np.array_equal` wherever both sides are our own
+arithmetic, and the differential suite did so throughout. If a check genuinely cannot be exact,
 document why in that test rather than loosening it quietly.
 
 ## Edge cases and conventions that must survive the port
@@ -549,45 +569,60 @@ C++-specific, added by the port:
    Xcode's copy trails upstream, so the macOS wheels would have failed on their first CI run.
 6. ~~**An out-of-range numeric token fails to parse.**~~ Closed too: fast_float saturates the value
    and only flags `result_out_of_range`, so accepting that code matches Rust exactly.
-7. **`parse_model` / `parse_shapes` exist on both sides purely for parity testing** — the Rust
-   bindings had no model-level oracle beyond a block count. Neither is re-exported from its
-   package. Delete both at cut-over.
-8. ~~**`maturin develop` builds the oracle in debug.**~~ Closed: `build-oracle` now passes
-   `--release`. Float results are identical either way (Rust applies no fast-math), but the whole
-   suite runs in ~55 s instead of ~5.5 min, and timing comparisons are meaningless without it.
+7. ~~**`parse_model` / `parse_shapes` exist purely for parity testing.**~~ Closed: both were
+   deleted at cut-over, along with the row type aliases they needed (128 lines of bindings).
 
-## Port order
+## How the port went, step by step
 
-Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, and keep
+Kept as a record of what each stage was actually checked against — useful if a bug ever turns up in
+one of these areas, because it says what was and was not proven at the time.
+
+Each step ported a module, added its C++ tests, extended the differential suite, and kept
 `pixi run test` green.
 
-1. ~~`time.hpp`, `pwl.cpp`~~ — done.
-2. ~~`model.hpp` + `parser.cpp`~~ — done, plus `scan.cpp` and `error.hpp`, which the Rust version
-   gets from the standard library. Oracle: `parse_file` block count, then every event library and
-   every shape compared field by field via `parse_model` / `parse_shapes`, and the parse-error
-   message compared verbatim.
-3. ~~`waveform.cpp`~~ — done, against the `seq.gradient(ax)` oracle: 24.8 M gradient corners over
-   three modes and three axes, 27.3 M ADC sample times, 4,601 RF events and 4,261 triggers, all
-   exactly equal. **The h5 comparison at 1e-4 is still outstanding** — it needs the dense sampler
-   from step 4, and it is what would catch an error both ports share.
-4. ~~`sample.cpp`~~ — done: `Sampler`, the spec builders, k-space, the flat batched path, the
-   dense sampling, and the N-D time-array support in the bindings. 27.9 M flat k-space points
-   compared exactly. **The reference-h5 comparison is done too** (`pixi run test-h5`), which
-   closes the one thing step 3 left outstanding.
-5. ~~`dsv.cpp`~~ — done, against both `read_dsv_pwl` corners and `read_dsv` dense values, over
-   every channel in the corpus rather than just the gradients. See **The `.dsv` channel kinds**.
-6. ~~`inf.cpp`~~ — done, against `inf_lead_in`, `read_inf_adc`, `read_inf_adc_events`,
-   `read_inf_sync` and `read_inf_rf` on all five datasets, plus a synthetic pair for the
-   asymmetric RF center (see below).
-7. ~~`DsvSet`~~ — done. The Python `Sequence` and `DsvSet` now bind their shared
-   `WaveformSource` surface from **one template** in the bindings, so the two cannot drift apart;
-   `test_dsvset_and_sequence_expose_the_same_interface` asserts it on both sides. The surfaces were
-   checked method for method against the Rust classes: 21, 18 and 3 names for `Sequence`, `DsvSet`
-   and `Sampler`, none missing, none extra.
-8. **Cut over.** Rename the Python package from `seq2waveform_cpp` to `seq2waveform`, drop `maturin`
-   and the oracle task from `pyproject.toml`, move the dataset suite and the test corpus over from
-   the Rust repo, port its `recipe.yaml` to build from the new wheel, add the cibuildwheel GitHub
-   Actions workflow (copy gropt's `build-and-publish.yml`), and archive the Rust repo.
+1. `time.hpp`, `pwl.cpp` — the `Ps` time type and the piecewise-linear core.
+2. `model.hpp` + `parser.cpp`, plus `scan.cpp` and `error.hpp`, which Rust gets from its standard
+   library. Checked on a block count, then every event library and every shape field by field, and
+   the parse-error message verbatim.
+3. `waveform.cpp` — 24.8 M gradient corners over three modes and three axes, 27.3 M ADC sample
+   times, 4,601 RF events and 4,261 triggers, all exactly equal.
+4. `sample.cpp` — `Sampler`, the spec builders, k-space, the flat batched path, the dense sampling,
+   and N-D time arrays in the bindings. 27.9 M flat k-space points compared exactly. This step also
+   added `test-h5`, the first check that did not depend on the Rust code being right.
+5. `dsv.cpp` — checked against both the corner and the dense form, over every channel in the corpus
+   rather than just the gradients. See **The `.dsv` channel kinds**.
+6. `inf.cpp` — the lead-in, the ADC times and grouping, the SYNC events and the RF events on all
+   five datasets, plus a synthetic pair for the asymmetric RF center (see below).
+7. `DsvSet` — the second `WaveformSource`. `Sequence` and `DsvSet` bind their shared surface from
+   **one template** in the bindings, so they cannot drift apart;
+   `test_dsvset_and_sequence_expose_the_same_interface` still asserts it. The surfaces were checked
+   method for method against the Rust classes: 21, 18 and 3 names, none missing, none extra.
+8. Performance. With parity reached and both sides in release, five allocation bugs — one of them a
+   47-second `memcpy` — came out. See **Whole-pipeline performance, measured**.
+9. Cut-over. Renamed the package to `seq2waveform`, retired the oracle and the differential suite,
+   kept its oracle-free half as `tests/test_invariants.py`, folded the Rust repo's dataset suite
+   into `test-h5` (three of its four tests were already there; the fourth, DSV-vs-h5, was not),
+   deleted the `parse_model` / `parse_shapes` scaffolding, and ported `recipe.yaml` to wrap a
+   scikit-build-core wheel.
+
+### What the cut-over gave up
+
+Worth being explicit, because it is the main risk this document exists to flag. The differential
+suite asserted *bit-exact* equality against an independent implementation across 284 cases. Nothing
+left is that strong. In its place:
+
+- `test-h5` — an outside answer, but a tolerance one (1e-4), and only on gradients, ADC times and
+  excitation centers. It says nothing about triggers, RF metadata, ADC grouping, the INF, or the
+  DSV decoder's edge cases.
+- `test-invariants` — exact, but self-referential: it pins paths to each other, not to truth.
+- the C++ unit tests (`tests/test_*.cpp`, 7 ctest suites) — ported from the Rust unit tests, so they
+  carry that coverage forward, but they are small fixtures rather than real data.
+
+The gap is therefore: **anything on real data that only the oracle covered**. Triggers, RF event
+metadata, ADC event grouping after the `MaxAdcSegmentLength` merge, and the INF readers are checked
+on fixtures but no longer on the corpus. If one of those breaks, the current suite is unlikely to
+notice. Adding golden-file tests — snapshot the current output on the corpus and compare — would
+close most of it cheaply, and is the obvious next move if this code is going to keep changing.
 
 ## Conventions for the C++ side
 
@@ -610,63 +645,18 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
 - **Any new third-party dependency gets vendored under `extern/`**, with a README recording its
   version, where the bytes came from and its licence. The wheels, the sdist and the conda recipe
   all have to build with no network.
-- **Never hand-edit `seq2waveform_cpp/_core.pyi`.** It is regenerated on every build.
+- **Never hand-edit `seq2waveform/_core.pyi`.** It is regenerated on every build.
 
 ---
 
-## Kickoff prompt
+## If you are picking this up cold
 
-Start the session in **this** project folder, and add the Rust repo (`../seq2waveform`) as a second
-working directory — the port needs to read the Rust source, and the datasets live there.
+Read **Edge cases and conventions that must survive the port** first — it is most of the real
+knowledge here, and almost every line of it is a bug someone already paid for.
 
-```text
-Continue the C++ port of seq2waveform. This project is the C++ port; ../seq2waveform is the Rust
-implementation it is being ported from, which is also the test oracle and holds the datasets.
-
-Read PORTING.md here first — it has the layout, the test corpus, the validation bars, every edge
-case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
-module you are porting under ../seq2waveform/crates/seq2waveform/src/.
-
-Scope for this session: step 8 of the port order — the cut-over. Rename the Python package from
-seq2waveform_cpp to seq2waveform, drop maturin, h5py and the oracle task from pyproject.toml, move
-the dataset suite and the test corpus over from the Rust repo, port its recipe.yaml to build from
-the new wheel, add the cibuildwheel GitHub Actions workflow (copy gropt's build-and-publish.yml),
-and archive the Rust repo.
-
-Before starting it, read the "Known gaps" list: parse_model/parse_shapes exist on both sides only
-for parity testing and must be deleted, and the parity suite itself goes away with the oracle --
-so test-h5 and the dataset suite become the only safety net. Make sure they cover what parity was
-covering before you remove it.
-
-Rules:
-- The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say
-  so and justify it. Canonical units are applied in the parser (seconds, Hz, Hz/m, radians), and
-  event id 0 means "no event".
-- C++17. The core stays nanobind-free: only bindings/ may include nanobind. Add every new .cpp to
-  src/seq2waveform_core.cmake.
-- Tests are not optional and not an afterthought:
-  * port the Rust unit tests for the module into tests/ and register them with ctest;
-  * extend tests/test_parity.py with differential checks against the Rust extension over every
-    dataset, asserting exact equality (np.array_equal), not a tolerance;
-  * a parity run that reports "skipped" has found no oracle or no corpus — that is a failure, not
-    a pass. Check the summary line.
-- Verify before reporting: `pixi run test-cpp`, `pixi run test-parity` and `pixi run test-h5`
-  here, and `pixi run test` in ../seq2waveform (the Rust suite vs the h5 and the DSV must stay
-  green). Paste the real output. If something fails, say so with the numbers rather than narrowing
-  the test.
-- The parity suite only proves the two ports agree. `pixi run test-h5` is the only independent
-  ground truth in the project, so run it on anything that changes a waveform.
-- The generated stub seq2waveform_cpp/_core.pyi is build output — never edit it. Put docstrings in
-  the nanobind def(...) calls, numpydoc style, and check they came through in the regenerated stub.
-- ../seq2waveform must keep working until the final cut-over, so do not change its behaviour. You
-  MAY add read-only introspection to its bindings when parity needs an oracle that does not exist
-  yet (step 2 had to, for the event libraries): additive pyfunctions only, not re-exported from the
-  package, documented as port scaffolding, added to python/seq2waveform/_seq2waveform.pyi so the
-  stub stays an exact match for the module, and listed in PORTING.md's known gaps for deletion at
-  cut-over. The Rust suite staying green is the test that you only added.
-
-Flag anything in PORTING.md's "Known gaps" list that this module touches, and tell me what you
-decided rather than silently inheriting the behaviour.
-```
-
-Swap the "Scope for this session" paragraph for the next step each time; everything else stays.
+Then: `pixi run test` must be green before and after whatever you change, and `pixi run test-h5`
+is the one that matters most, since it is the only check that does not grade this code against
+itself. If you touch anything in the hot paths, read **Whole-pipeline performance, measured**
+before optimising — four of the five bugs it describes were introduced by code that looked
+obviously correct, and one of them survived five rounds of testing because it was correct, just
+500x too slow.

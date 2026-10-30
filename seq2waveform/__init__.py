@@ -1,12 +1,11 @@
-"""seq2waveform (C++ port): read Pulseq .seq and Siemens .dsv files into waveform arrays.
+"""seq2waveform: read Pulseq .seq and Siemens .dsv files into waveform arrays.
 
-Installed alongside the Rust `seq2waveform` under a separate name during the port, so the two
-implementations can be compared in one environment (see ``tests/test_parity.py``). The package is
-renamed to ``seq2waveform`` once the Rust crate is retired.
+Two sources, one interface. ``Sequence`` reads a Pulseq ``.seq`` and expands its blocks;
+``DsvSet`` reads a Siemens measurement's ``.dsv`` channels plus its ``.inf``. Both then offer the
+same sampling and k-space API, so a Siemens set is a drop-in for a ``.seq``.
 
-``_core.parse_model`` and ``_core.parse_shapes`` are deliberately not re-exported here: they are
-port scaffolding for the parity suite, mirroring two functions of the same names on the Rust side,
-and both go away at cut-over.
+Times are int64 picoseconds internally, which is what makes a delay sweep bit-exact regardless of
+where in the sequence it lands; values stay float64.
 """
 
 from ._core import (
