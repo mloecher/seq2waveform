@@ -158,7 +158,7 @@ DsvChannel read_dsv_text(std::string_view text) {
 
     // Split on '\n' in place rather than with std::getline, which allocates and copies a
     // std::string per line -- a DSV channel is one integer per line and millions of lines long, so
-    // that was most of the read. Same segmentation as parse_text; see PORTING.md.
+    // that was most of the read. Same segmentation as parse_text.
     std::size_t pos = 0;
     bool done = false;  // the `;` terminator in [VALUES] ends the read, as Rust's `break` does
     while (!done && pos < text.size()) {

@@ -13,8 +13,7 @@ regenerated deliberately: see `scripts/gen_golden.py`.
 The columns deliberately cover what nothing else checks on real data -- triggers, RF event
 metadata, ADC grouping after the `MaxAdcSegmentLength` merge, the INF and DSV readers, and the
 `centers` / `dsv` gradient modes -- plus the gradient corners and flat k-space, which are the
-primary outputs and the code the allocation fixes rewrote. See PORTING.md, "What the cut-over
-gave up".
+primary outputs.
 
 A run that reports *skipped* checked nothing; see `conftest.py`.
 """

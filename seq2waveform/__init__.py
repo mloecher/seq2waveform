@@ -115,13 +115,9 @@ def _dsv_paths(src):
 def load(src, *, mode=None, gamma=None):
     """Open a Pulseq ``.seq`` or a Siemens DSV export, in the representation they share.
 
-    A ``.seq`` is read with ``gradient_mode="dsv"`` unless told otherwise, because that is the
-    only one of the three modes that matches what a Siemens DSV export contains: it resamples the
-    whole channel onto the raster centers, rounding trapezoid corners as well as smoothing
-    arbitrary shapes. The other modes differ on every axis of every sequence tested, so a ``.seq``
-    read in the default ``"pulseq"`` mode is not comparable with a measured DSV. Pass
-    ``mode="pulseq"`` deliberately when the comparison you want is against Pulseq's own reference
-    ``.h5``.
+    A ``.seq`` is read with ``gradient_mode="dsv"`` unless told otherwise: that is the mode which
+    matches what a DSV export holds, so the two sources become comparable. Pass ``mode="pulseq"``
+    when the comparison you want is against Pulseq's own reference ``.h5``.
 
     Parameters
     ----------

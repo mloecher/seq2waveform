@@ -1,10 +1,4 @@
-# Why this exists: the action pins in these workflows went three majors stale without anything
-# noticing, because a pinned tag keeps working indefinitely -- it just quietly stops receiving
-# fixes and eventually runs on a Node runtime GitHub is retiring. A weekly PR is the smallest
-# thing that turns "stale forever" into "a diff to review".
-#
-# Grouped into one PR: these move together, and four separate bumps a week is how people start
-# ignoring them.
+# One grouped PR a week for the action pins, which otherwise go stale without anything noticing.
 version: 2
 updates:
   - package-ecosystem: github-actions

@@ -1,12 +1,8 @@
 cmake_minimum_required(VERSION 3.17)
 project(seq2waveform LANGUAGES CXX)
 
-# An empty CMAKE_BUILD_TYPE on a single-config generator (Make, Ninja) means no optimisation at
-# all -- `cmake -S . -B build && cmake --build build` would silently produce an unoptimised
-# library, and the bench_* executables in tests/ would report meaningless numbers. Multi-config
-# generators (Visual Studio, Xcode) ignore the variable and take --config at build time instead,
-# so this must not be forced there: setting it anyway is what makes CMake warn that a
-# manually-specified variable went unused.
+# Make and Ninja give no optimisation at all with an empty build type. Multi-config generators
+# (Visual Studio, Xcode) ignore this and take --config at build time, so don't force it there.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -30,23 +26,10 @@ if(S2W_BUILD_MODULE)
     list(APPEND CMAKE_PREFIX_PATH "${NB_DIR}")
     find_package(nanobind CONFIG REQUIRED)
 
-    # FREE_THREADED declares that this module does not need the GIL, which is what lets a
-    # free-threaded interpreter (3.14t) keep it disabled instead of re-enabling it at import and
-    # warning. nanobind sets the option to FALSE by itself when the interpreter is not
-    # free-threaded, so this is unconditional and a no-op on a normal CPython build.
-    #
-    # What makes the claim true, audited rather than assumed: there is no namespace-scope mutable
-    # state in src/ or bindings/, no `mutable` members, no lazily-computed or cached fields, and
-    # no Python objects held in C++. Every public method on the shared types (Sequence, DsvSet,
-    # PiecewiseLinear and the INF/DSV readers) is const, so two threads calling into one object
-    # are both reading. The single function-local static -- `static const DsvChannel empty` in
-    # dsvset.cpp -- is const and initialised once, which C++11 makes thread-safe. Results are
-    # freshly allocated arrays handed to numpy with their own capsule owners, so no buffer is
-    # shared between calls. The two std::fprintf(stderr) warnings are locked by the C runtime;
-    # concurrent warnings can interleave in the text but cannot race.
-    #
-    # If any of that changes -- a cache, a lazily filled field, a non-const accessor -- this flag
-    # has to be reconsidered, and nb::ft_mutex is the tool for it.
+    # FREE_THREADED: the module declares it doesn't need the GIL, so 3.14t keeps it disabled.
+    # nanobind turns the option off itself on a non-free-threaded interpreter, so it's a no-op
+    # there. Safe because nothing here holds mutable shared state: no globals, no caches, every
+    # public method const, results freshly allocated. Revisit if that stops being true.
     nanobind_add_module(_core FREE_THREADED bindings/seq2waveform_wrapper.cpp)
     target_link_libraries(_core PRIVATE seq2waveform_core)
 

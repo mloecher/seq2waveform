@@ -119,7 +119,7 @@ test-load = { cmd = "pytest tests/test_load.py -v", depends-on = ["build"] }
 check-stub = { cmd = "git diff --exit-code -- seq2waveform/_core.pyi", depends-on = ["build"] }
 # Everything.
 test = { depends-on = ["test-cpp", "test-h5", "test-invariants", "test-golden", "test-load", "check-stub"] }
-# Timings on the real datasets; see PORTING.md's performance sections.
+# Timings on the real datasets.
 bench = { cmd = "python scripts/bench.py", depends-on = ["build"] }
 # A redistributable wheel, for cibuildwheel to do per-platform or for the conda recipe to wrap.
 build-wheel = "python -m pip wheel --no-build-isolation --no-deps -w dist ."

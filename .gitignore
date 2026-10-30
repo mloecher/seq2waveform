@@ -30,3 +30,7 @@ wheelhouse/
 compile_commands.json
 .cache/
 .vs/
+
+# Working notes, kept locally.
+private_*/
+private_*

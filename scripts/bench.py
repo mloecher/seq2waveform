@@ -4,8 +4,7 @@ Nothing is cached internally, so every call below recomputes from the parsed blo
 what makes repeated calls honest, and what makes these numbers the cost of the work itself.
 
 For a breakdown with no Python boundary in the way, build `tests/bench_expand.cpp` instead
-(`pixi run test-cpp` builds it; see PORTING.md's performance sections). Use that one before
-blaming the bindings for a slow call: during the port the gap was in the core every time.
+(`pixi run test-cpp` builds it). Use that one before blaming the bindings for a slow call.
 
 Usage
 -----

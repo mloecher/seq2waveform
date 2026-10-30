@@ -42,8 +42,7 @@ sm.gradients(times)              # -> (t, gx, gy, gz)
 sm.kspace(times, reference)      # -> (t, kx, ky, kz)
 ```
 
-These relationships hold **bit-for-bit**, which is worth knowing because it means you can always
-drop down a level without changing your answer:
+These hold bit-for-bit, so you can always drop down a level without changing your answer:
 
 | the shortcut | is exactly |
 |---|---|
@@ -67,15 +66,15 @@ Rows are the quantity, columns are where it lands.
 | **k-space, one flat array** | `adc_kspace_flat()` | `trigger_kspace_flat(delay, dt, n)` | `sampler().kspace_flat(t, offsets, refs)` |
 | **the sample times alone** | `adc_events()`, `adc_specs()` | `trigger_specs(delay, dt, n)` | — |
 
-**Per-event or flat.** The first two rows return a *list*, one tuple per readout. The `_flat`
-versions return one long array plus an `offsets` array to slice it back apart. Use flat when you
-were going to concatenate anyway — it is one allocation instead of hundreds.
+**Per-event or flat.** The first two rows return a list, one tuple per readout. The `_flat`
+versions return one long array plus an `offsets` array to slice it apart. Use flat when you were
+going to concatenate anyway.
 
 **The trigger columns** take `(delay, dt, n)`: the delay after each trigger, the sample spacing,
 and the number of samples. That is the Skope-style measurement — a fixed grid hung off each
 trigger, rather than the scanner's own ADC grid.
 
-## The gradient on its own, with no ADC involved
+## The gradient on its own
 
 | | |
 |---|---|
@@ -114,7 +113,7 @@ Scalar-ish metadata is a list of tuples: `rf_events()` is `(center_s, freq_hz, p
 so it is what was actually sampled rather than what you asked for. For raster-aligned times it
 comes back identical to the input.
 
-## `gradient_mode` — the one setting that changes everything
+## `gradient_mode`
 
 Only on `Sequence`, because it is about reconstructing a `.seq`'s shape lists.
 
@@ -124,8 +123,7 @@ Only on `Sequence`, because it is about reconstructing a `.seq`'s shape lists.
 | `"centers"` | connects the center samples of *arbitrary* shapes; trapezoids stay sharp. |
 | `"dsv"` | resamples the whole channel onto raster centers: rounds trapezoid corners **and** smooths arbitrary shapes. This is the Siemens DSV / commanded waveform. |
 
-This is not a subtle knob. Measured across the test corpus, comparing each mode's gradient against
-`pulseq`:
+Measured across the test corpus, comparing each mode's gradient against `pulseq`:
 
 | dataset | `dsv` vs `pulseq` | `centers` vs `pulseq` |
 |---|---|---|
@@ -240,27 +238,3 @@ seconds and they are taken verbatim.
 ps = s2w.ps_from_secs(times)
 k = sm.kspace(ps + 1000, ps[0])      # shifted by exactly 1 ns
 ```
-
-## What I would change
-
-Honest answers to "would you rearrange anything", in order of how much they would help.
-
-**1. A single loader, defaulting to `dsv`** — done, that is `load` above. It is additive; nothing
-existing changed. `Sequence`'s own default stays `"pulseq"`, because that mode exists to match
-Pulseq's reference `.h5` and is right for what it is for; `load` is where the GIRF-shaped default
-lives instead. That is the safer half of the next item.
-
-**2. `gradient_mode` still defaults to `"pulseq"` on the constructor.** Forgetting it there does
-not fail — it silently changes every axis of every sequence. Flipping it would be a breaking
-change for `.h5` comparisons, so the remaining question is only whether to deprecate calling
-`Sequence(...)` directly for this workflow in favour of `load`. Using `load` everywhere settles
-it in practice.
-
-**3. Some names are more parallel than their behaviour.** `adc_gradient_samples()` and
-`adc_kspace()` return the same shape at the same times, so the `_samples` suffix on one of them
-suggests a distinction that is not there; `adc_gradients()` would match. `gradient_axis_dense(axis,
-raster)` and `gradients_dense(raster)` differ by a word in the middle rather than at the end. And
-`adc_events()` / `adc_events_meta()` / `adc_specs()` / `adc_times()` are four views of one thing —
-the table at the top of this file is really a workaround for that. None of this is worth a breaking
-rename on its own; it is worth knowing why they feel interchangeable, which is that they nearly
-are.

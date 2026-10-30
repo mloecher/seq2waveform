@@ -294,8 +294,7 @@ Inf read_inf_stream(std::istream& in) {
     std::optional<EventBlock> cur;
 
     // The INF files run to 142 MB, so the line loop matters: read in 64 KiB blocks and split the
-    // buffer in place rather than allocating a std::string per line (see PORTING.md's note on
-    // parse_text).
+    // buffer in place rather than allocating a std::string per line.
     std::string text;
     {
         char buf[1 << 16];

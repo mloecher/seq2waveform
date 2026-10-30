@@ -32,7 +32,7 @@ namespace s2w {
 /// Trim ASCII whitespace from both ends.
 ///
 /// Rust's `str::trim` trims Unicode whitespace. The two agree on ASCII input, which is all a
-/// Pulseq text file holds; see PORTING.md on non-ASCII input.
+/// Pulseq text file holds.
 std::string_view trim(std::string_view s);
 
 /// True when `s` begins with `prefix`.

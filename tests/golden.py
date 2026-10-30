@@ -208,8 +208,7 @@ def compare(name: str, got: dict, want: dict, accept_rtol: float | None = None) 
 #
 # Chosen to cover what the cut-over left unchecked on real data -- triggers, RF event metadata,
 # ADC event grouping after the MaxAdcSegmentLength merge, and the INF/DSV readers -- plus the
-# gradient corners in all three modes and the flat k-space, which are the primary outputs and the
-# code the performance work rewrote. See PORTING.md, "What the cut-over gave up".
+# gradient corners in all three modes and the flat k-space, which are the primary outputs.
 
 GRAD_MODES = ("pulseq", "centers", "dsv")
 AXES = ("x", "y", "z")

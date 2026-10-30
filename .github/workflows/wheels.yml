@@ -1,21 +1,11 @@
-# The full wheel matrix: CPython 3.10-3.14 plus 3.14 free-threaded, on Linux x86_64, macOS (both
-# architectures) and Windows x64. See `[tool.cibuildwheel]` in pyproject.toml for the build selection, the skips and
-# the per-architecture macOS deployment targets.
+# CPython 3.10-3.14 plus 3.14 free-threaded, on Linux x86_64, macOS (both arches) and Windows x64.
+# See [tool.cibuildwheel] in pyproject.toml for the selection and the per-arch macOS targets.
 #
-# Not on every push, deliberately. It is six builds per platform and takes tens of minutes, while
-# `core` and `package` in ci.yml already compile the core and the bindings on all four toolchains
-# within a few minutes of a commit. Run this from the Actions tab when the matrix itself is what
-# you want to check -- which includes the first time this is pushed, since no non-Windows compiler
-# has ever built this code -- and on a release tag. It also runs on a pull request that edits this
-# file, so a change to the matrix is tested by the change itself.
-#
-# Both macOS architectures are built natively, each on its own runner, so cibuildwheel's
-# `test-command` runs for both and every wheel here is executed and not merely built.
-# `macos-15-intel` is the current Intel runner; the old `macos-13` label is retired.
-#
-# To add the remaining native runners, append `ubuntu-24.04-arm` and `windows-11-arm` to the
-# matrix -- free for public repositories, and billed per-minute like any other runner otherwise.
-# Nothing in the code is architecture-specific, so this is a question of what you want to ship.
+# Not on every push: six builds per platform, tens of minutes, and ci.yml already catches a
+# toolchain break in a few. Run it from the Actions tab when the matrix itself is the question, and
+# on a release tag. Both macOS arches build natively, one runner each, so cibuildwheel's
+# test-command runs for both (macos-15-intel is the current Intel label; macos-13 is retired).
+# ubuntu-24.04-arm and windows-11-arm would add the remaining native runners.
 
 name: Wheels
 
@@ -37,10 +27,8 @@ env:
 
 jobs:
   version:
-    # Taken from gropt's build-and-publish.yml, which has this and this did not. The wheel build
-    # triggers on a `v*` tag but takes its version from pyproject.toml, so tagging v0.2.0 without
-    # bumping the file produces a full matrix of wheels labelled 0.1.0 -- and nothing downstream
-    # would notice, because a wheel's filename is simply what the metadata said.
+    # The build triggers on a v* tag but takes its version from pyproject.toml, so tagging v0.2.0
+    # without bumping the file would produce a whole matrix labelled 0.1.0.
     name: tag matches pyproject
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -67,8 +55,8 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # Runs after the version check on a tag, and on its own otherwise: `always()` keeps the
-    # matrix going when `version` is skipped, while still stopping on a real mismatch.
+    # always() keeps the matrix going when `version` is skipped off-tag, but still stops on a
+    # real mismatch.
     needs: [version]
     if: always() && needs.version.result != 'failure'
     permissions:
@@ -81,15 +69,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # Pinned to a patch rather than floating: a cibuildwheel bump changes which interpreters and
-      # platform tags come out, and v4 made delvewheel the default Windows repair step. That is a
-      # release decision, so bump it deliberately. Dependabot will open the PR.
+      # Pinned to a patch: a bump changes which interpreters and platform tags come out.
       - uses: pypa/cibuildwheel@v4.3.5
       - name: The build must not have written into the source tree
-        # A wheel build that dirties the checkout is building something it will not ship, or
-        # leaving generated files where the next build picks them up. The one file this project
-        # does generate in-tree, seq2waveform/_core.pyi, is committed, so a diff here means it is
-        # stale -- see `pixi run check-stub`.
         run: git diff --exit-code
         shell: bash
       - uses: actions/upload-artifact@v7
@@ -117,8 +99,6 @@ jobs:
           name: wheels-all
           path: wheelhouse/*.whl
 
-  # Publishing is not wired up: this project installs from a local conda channel built by
-  # `pixi run conda-build` (see recipe.yaml), not from PyPI. If that changes, add a job here gated
-  # on `github.event_name == 'release'`, with `environment: pypi` and permissions
-  # `id-token: write` plus `attestations: write`, running actions/attest on the artifacts and then
-  # pypa/gh-action-pypi-publish via trusted publishing -- and never a long-lived token.
+  # No publish job: this installs from a local conda channel (`pixi run conda-build`), not PyPI.
+  # If that changes: gate on a release, add environment: pypi with id-token/attestations write,
+  # and use trusted publishing rather than a token.
