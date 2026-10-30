@@ -65,9 +65,10 @@ jobs:
           # compromised dependency gets push access.
           persist-credentials: false
       - name: Configure
-        run: >
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF
+        # No -DCMAKE_BUILD_TYPE: CMakeLists.txt defaults it on the single-config generators and
+        # the multi-config ones take --config at build time, so passing it would just warn on
+        # Windows that it went unused.
+        run: cmake -S . -B build -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test

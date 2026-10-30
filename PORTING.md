@@ -307,6 +307,77 @@ Two more, found in this pass and left alone deliberately:
 
 The right trigger for any of these is a profile of a real workload, not this table.
 
+## Compile and repository options
+
+Few flags, and the reasons they are the ones they are.
+
+**`-ffp-contract=off` on GCC, Clang and AppleClang — a correctness setting, not a tuning knob.**
+GCC defaults to `-ffp-contract=fast` and Clang to `=on`, both of which let the compiler fuse
+`a + b * c` into one FMA with a single rounding instead of two. That changes the last bit, and
+tests/golden/ pins every output bit-for-bit. The exposure is uneven: x86-64's base ISA has no FMA
+instruction to fuse into, so the Linux and Intel macOS wheels were never at risk, but **FMA is in
+the arm64 baseline**, so the Apple Silicon wheel was. The expressions it would have changed are
+precisely the ones that matter — `cum[i-1] + 0.5 * (v0 + v1) * dt` in `pwl.cpp`, the k-space sums
+in `waveform.cpp`.
+
+Pinning it off makes the GNU-like compilers reproduce what MSVC already produces; it does not
+change what MSVC produces, so the committed snapshots stay valid. MSVC is deliberately left alone:
+its x64 default targets SSE2, emits no FMA, and so already behaves this way, and touching its FP
+flags would risk moving the very numbers the snapshots pin. The cost is losing FMA in those loops
+on arm64 and on any AVX2 build — unmeasured, because there is no arm64 machine here, and the hot
+paths are dominated by parsing and memory traffic. If an arm64 benchmark ever argues otherwise,
+the alternative is a second snapshot set for arm64, which is a considerably worse trade.
+
+With contraction pinned, the remaining threat to cross-platform bit-exactness is `libm`: `std::sin`
+and `std::cos` are not bit-identical between glibc, Apple's libm and the MSVC CRT. There are
+exactly two such calls in the library, both in `rf_pulse` building the complex RF waveform, and
+**no golden column carries that waveform** — the RF columns are scalars (`center_s`, `freq_hz`,
+`phase_rad`, `use`). So the snapshots should hold across compilers, rather than being expected to
+drift. Everything else numeric goes through `std::llround`, `floor`, `ceil`, `fabs` and `round`,
+all of which are exactly specified.
+
+**`-Wall -Wextra` on the GNU-like compilers, not `-Werror`, and MSVC left at `/W3`.** CI is the
+only reader of those warnings, since development happens on MSVC; a warning from the first ever
+gcc or clang build of this code should start a conversation, not block the matrix. `/W4` locally
+is a one-word change in `src/seq2waveform_core.cmake` if it is ever wanted.
+
+**`CMAKE_BUILD_TYPE` defaults to Release in `CMakeLists.txt`**, but only when the generator is
+single-config and nothing was asked for. An empty build type on Make or Ninja means no
+optimisation at all, so a plain `cmake -S . -B build && cmake --build build` would quietly produce
+an unoptimised library and meaningless `bench_*` numbers. Multi-config generators (Visual Studio,
+Xcode) ignore the variable and take `--config` at build time, which is why it must not be forced
+there — doing so is what makes CMake warn that a manually-specified variable went unused. The
+wheel build states `cmake.build-type = "Release"` in `pyproject.toml`; that is already
+scikit-build-core's default, and it is written down because a silent change to it would ship an
+unoptimised wheel without anything failing.
+
+**What nanobind already handles, so it is absent here on purpose.** `nanobind_add_module` sets
+`CXX_VISIBILITY_PRESET hidden`, and defaults to linking the nanobind runtime **statically** into
+`_core` (`NB_STATIC` is implied unless `NB_SHARED` or split mode). The second point settles an
+open question from the cibuildwheel v4 bump: with no non-system shared library to bundle,
+`delvewheel` on Windows and `auditwheel` on Linux have nothing to do. `STABLE_ABI` is deliberately
+unused — it would forgo per-version optimisations and cannot be combined with free-threading
+before Python 3.15.
+
+**LTO is available and deliberately not taken yet.** `nanobind_add_module` accepts an `LTO`
+keyword, and it would shrink the extension. It is also a classic source of toolchain-specific
+link failures, and no non-Windows compiler has built this code at all yet. Adding it now would
+mean debugging two new variables at once; it is worth revisiting once the matrix is green.
+
+**`cxx_std_17` via `target_compile_features`** rather than a hardcoded `/std:` or `-std=` flag, so
+CMake picks the right spelling per compiler. The standard matches gropt's core target, so the two
+libraries can be linked into one build if a shared waveform core is ever wanted.
+
+**Repository options.** `.gitattributes` decides line endings rather than each clone's
+`core.autocrlf`: `* text=auto` stores text as LF, and `*.pyi` and `*.yml` are pinned to LF
+specifically. The `.pyi` because it is generated, committed and byte-compared by
+`pixi run check-stub`, which has to mean the same thing on every platform; the workflow YAML
+because it carries shell heredocs that a stray CR would break on a Linux runner. No tracked blob
+held a CR when this was added, so it is a no-op for history. What is committed and why: `pixi.lock`
+(so the nanobind that writes the stub is pinned), `seq2waveform/_core.pyi` (so editors have the
+API without a build first), and `extern/fast_float` vendored (so the sdist and conda's offline
+build phase need no network).
+
 ## Continuous integration
 
 Two workflows under `.github/workflows/`.
@@ -387,11 +458,15 @@ passing vacuously — the one guard that stops "everything skipped" from reading
   skips stub generation when `CMAKE_OSX_ARCHITECTURES` differs from `uname -m`, because it cannot
   import a foreign-architecture module — but CI no longer takes it. (`macos-13` was the old Intel
   runner label and is retired; `macos-15-intel` replaces it.)
-- **On first contact, expect the golden snapshots to be the open question.** They are bit-exact
-  and were written by MSVC on x86-64; a different compiler may contract a multiply-add differently
-  and move the last bit. Run with `S2W_GOLDEN_RTOL=1e-12` on a machine with the corpus: a pass
-  says the difference is float noise and the snapshots can be regenerated there. That fallback
-  only sees the statistics and the probes, so it is for bring-up, not everyday use.
+- **The golden snapshots should hold, and arm64 is the reason they might not have.** They are
+  bit-exact and were written by MSVC on x86-64. FMA is in the arm64 baseline, so Clang would have
+  fused the trapezoid accumulations and moved the last bit — which is why
+  `-ffp-contract=off` is pinned for the GNU-like compilers (see *Compile and repository options*).
+  With that in place, and with the library's only `libm` calls not reaching any snapshot column,
+  a mismatch here is a real difference rather than expected noise and is worth reading before
+  regenerating anything. `S2W_GOLDEN_RTOL=1e-12` on a machine with the corpus remains the way to
+  tell the two apart: a pass says float noise. That fallback only sees the statistics and the
+  probes, so it is for bring-up, not everyday use.
 
 ### Free-threaded Python
 

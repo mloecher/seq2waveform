@@ -15,6 +15,10 @@ requires = ["scikit-build-core>=0.10", "nanobind>=3.0,<4"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
+# Release is already scikit-build-core's default; stated because it is the single most
+# consequential compile setting in the project and a silent default change would ship an
+# unoptimised wheel without anything failing.
+cmake.build-type = "Release"
 build-dir = ".scikit-build"
 # The package lives next to this file; CMake drops `_core` into it via install(TARGETS ...).
 wheel.packages = ["seq2waveform"]
@@ -85,7 +89,9 @@ S2W_TESTDATA = "testdata"
 build = "python -m pip install --no-build-isolation -e ."
 # C++ core tests (ported from the Rust unit tests) via ctest. S2W_BUILD_MODULE=OFF so this
 # needs neither Python nor nanobind and does not rebuild the bindings -- `build` owns those,
-# and every other test task depends on it.
+# and every other test task depends on it. No -DCMAKE_BUILD_TYPE here: --config Release covers
+# the multi-config generators, and CMakeLists.txt defaults the single-config ones, so passing it
+# would only make CMake warn that the variable went unused on Windows.
 test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
 # Ground truth: the waveforms against Pulseq's own reference h5, at 1e-4. This is the check that
 # does not depend on our own arithmetic being right, so it is the one to run after touching a

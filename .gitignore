@@ -24,3 +24,9 @@ build/
 
 # cibuildwheel output
 wheelhouse/
+
+# Editor and tooling output. compile_commands.json is generated per build tree and is what a
+# clangd setup wants at the root; .cache/ is clangd's index.
+compile_commands.json
+.cache/
+.vs/

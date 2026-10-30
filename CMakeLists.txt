@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.17)
 project(seq2waveform LANGUAGES CXX)
 
+# An empty CMAKE_BUILD_TYPE on a single-config generator (Make, Ninja) means no optimisation at
+# all -- `cmake -S . -B build && cmake --build build` would silently produce an unoptimised
+# library, and the bench_* executables in tests/ would report meaningless numbers. Multi-config
+# generators (Visual Studio, Xcode) ignore the variable and take --config at build time instead,
+# so this must not be forced there: setting it anyway is what makes CMake warn that a
+# manually-specified variable went unused.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 # ON for a wheel build, which is every `pip install`. OFF builds the core library and the C++
 # tests alone, which need neither Python nor nanobind -- the configuration CI uses to check that
 # the core compiles and passes on a toolchain, without installing a Python stack to do it.
