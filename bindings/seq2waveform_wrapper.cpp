@@ -23,6 +23,7 @@
 #include <variant>
 #include <vector>
 
+#include "seq2waveform/dsv.hpp"
 #include "seq2waveform/error.hpp"
 #include "seq2waveform/model.hpp"
 #include "seq2waveform/parser.hpp"
@@ -467,6 +468,8 @@ NB_MODULE(_core, m) {
                 std::rethrow_exception(p);
             } catch (const s2w::ParseError& e) {
                 PyErr_SetString(PyExc_ValueError, e.what());
+            } catch (const s2w::DsvError& e) {
+                PyErr_SetString(PyExc_ValueError, e.what());
             }
         },
         nullptr);
@@ -894,6 +897,59 @@ NB_MODULE(_core, m) {
             "tuple of ndarray\n"
             "    `(kx, ky, kz)`, each the length of `times`. Reuses the one prebuilt sampler, so\n"
             "    this is the fast path for whole-sequence k-space and for delay sweeps.");
+
+    m.def(
+        "read_dsv",
+        [](const std::string& path) {
+            const s2w::DsvChannel ch = s2w::read_dsv_file(path);
+            return nb::make_tuple(to_numpy(ch.dense()), ch.raster_time, ch.unit);
+        },
+        "path"_a,
+        "Read a Siemens `.dsv` channel as dense per-sample values.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to one `.dsv` channel file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "values : ndarray of float64\n"
+        "    Per-sample values in physical units (`VERTFACTOR` applied).\n"
+        "raster_time : float\n"
+        "    Sample spacing (s), from `HORIDELTA`.\n"
+        "unit : str\n"
+        "    The `VERTUNITNAME` string, e.g. \"mT/m\".\n\n"
+        "Raises\n"
+        "------\n"
+        "ValueError\n"
+        "    If a value line is not an integer, or `HORIDELTA`/`VERTFACTOR` is missing.");
+
+    m.def(
+        "read_dsv_pwl",
+        [](const std::string& path) {
+            const s2w::DsvChannel ch = s2w::read_dsv_file(path);
+            std::vector<double> v = ch.waveform.v;
+            return nb::make_tuple(secs_array(ch.waveform.t), to_numpy(std::move(v)),
+                                  ch.raster_time, ch.unit);
+        },
+        "path"_a,
+        "Read a Siemens `.dsv` channel as piecewise-linear corners.\n\n"
+        "The `[VALUES]` body is a run-length-encoded derivative, so a run of equal deltas is\n"
+        "one constant-slope segment and only slope changes are kept. The dense array is never\n"
+        "built, so this is both sparser and cheaper than `read_dsv`.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to one `.dsv` channel file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "corner_times : ndarray of float64\n"
+        "    Corner times (s), interval-centered at `(k+0.5)*raster_time`.\n"
+        "corner_values : ndarray of float64\n"
+        "    Corner values in physical units.\n"
+        "raster_time : float\n"
+        "    Sample spacing (s).\n"
+        "unit : str\n"
+        "    The `VERTUNITNAME` string.");
 
     m.def("parse_shapes", &parse_shapes, "path"_a,
           "Dump the `[SHAPES]` library of a `.seq` file.\n\n"

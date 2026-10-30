@@ -41,6 +41,10 @@ Built and verified:
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
   `Shape::decompressed`, `Sequence::definition_f64`.
 - `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
+- `src/include/seq2waveform/dsv.hpp`, `src/dsv.cpp` — the Siemens `.dsv` channel reader: the
+  RLE-delta stream decoded straight to piecewise-linear corners, never materialising the dense
+  array. `rle_to_piecewise` is also declared in `detail/dsv_detail.hpp` for the tests. `DsvSet`
+  (the whole measurement set as a `WaveformSource`) needs the INF reader and arrives at step 7.
 - `src/include/seq2waveform/sample.hpp`, `src/sample.cpp` — the `Sampler` (gradients, k-space,
   the flat batched path), the spec builders and the dense uniform-raster sampling. Rust's
   `WaveformSource` trait with default methods becomes an abstract base class whose non-virtual
@@ -59,7 +63,7 @@ Built and verified:
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  122 of them as of step 4. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
+  221 of them as of step 5. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
   shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
   ADC sample times, 4,601 RF events and 4,261 triggers; step 4 added 27.9 M flat k-space points.
   All exactly equal. A one-ULP perturbation of a single corner value does fail the suite, and
@@ -207,6 +211,31 @@ summary line, not just the exit code.
 **The two frames are the crux of this project.** The `.seq` and `.h5` share the Pulseq frame. The
 DSV lives in the Siemens frame, later by the INF-encoded lead-in. Everything that compares the two
 must shift by that lead-in, and must read it from the INF rather than fitting it.
+
+## The `.dsv` channel kinds
+
+Each dataset's `dsv/` folder holds 14 channel kinds plus the INF, and they are not interchangeable
+— worth knowing before writing a test that sweeps them, or before assuming `.dsv` means
+"gradient".
+
+| kind | raster | unit | notes |
+|---|---|---|---|
+| `GRX` `GRY` `GRZ` | 10 µs | `mT/m` | the gradients |
+| `M0X` `M0Y` `M0Z` | 10 µs | `mT/m * ms` | zeroth moments |
+| `SLL` | 10 µs | `T/s` | slew; the largest channel (89 MB on `cones`) |
+| `RFD` `RF2` `RF3` | 5 µs | `Volt` | RF envelopes; `RFD` carries the excitation peaks |
+| `ADC` | 1 µs | `-` | |
+| `NC1` | 1 µs | `Degree` | |
+| `CON` `ERR` | — | — | **no `VERTFACTOR`: both readers reject these** |
+| `*_INF` | — | — | **not a waveform channel at all** — `[SYNCTYPE]`/`[INFO]` and an ASCII event table. The reader runs to EOF and fails on the missing `VERTFACTOR`. This is step 6's format. |
+
+Two practical consequences for the parity suite. Agreeing on what to *refuse* matters as much as
+agreeing on what to decode, so the `CON`/`ERR`/INF rejections are compared by message, not skipped.
+And the sizes are brutal: 70 non-INF channels over ~260 MB, and one `cones` channel decodes to
+**63.5 million** samples, so a single dense reconstruction is a 508 MB array. Sweeping all of them
+densely on both implementations exhausts memory, not patience — the suite therefore checks corners
+(which stream) on every channel and the dense reconstruction on one channel per kind, which still
+covers every raster and unit above.
 
 ## Which dataset covers which gradient branch
 
@@ -445,8 +474,8 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
    dense sampling, and the N-D time-array support in the bindings. 27.9 M flat k-space points
    compared exactly. **The reference-h5 comparison is done too** (`pixi run test-h5`), which
    closes the one thing step 3 left outstanding.
-5. **`dsv.cpp`** — RLE-delta decode to PWL corners. Oracle: `read_dsv` dense values and
-   `read_dsv_pwl` corners.
+5. ~~`dsv.cpp`~~ — done, against both `read_dsv_pwl` corners and `read_dsv` dense values, over
+   every channel in the corpus rather than just the gradients. See **The `.dsv` channel kinds**.
 6. **`inf.cpp`** — INF parse, lead-in, ADC merge, triggers, RF centres. Oracle: `inf_lead_in`,
    `read_inf_adc_events` grouping, `read_inf_sync`, `read_inf_rf`.
 7. **`DsvSet`** behind the same interface as `Sequence`, so it stays a drop-in source.
@@ -493,8 +522,8 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 5 of the port order — dsv.cpp, the Siemens .dsv reader
-(../seq2waveform/crates/seq2waveform/src/dsv.rs).
+Scope for this session: step 6 of the port order — inf.cpp, the Siemens INF reader
+(../seq2waveform/crates/seq2waveform/src/dsv/inf.rs).
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say

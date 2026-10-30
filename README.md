@@ -7,12 +7,13 @@ Built with nanobind + scikit-build-core, so the Python type stubs (docstrings an
 annotations included) are regenerated from the compiled module on every build.
 
 **Status: in progress.** The time type, the piecewise-linear core, the Pulseq `.seq` reader,
-waveform expansion and the sampler/k-space are ported and verified bit-exact against the Rust
-implementation — 122 differential tests covering every event library, every shape, the parse-error
-messages, 24.8 M gradient corners across all three gradient modes and 27.9 M k-space points. The
-port is also checked independently against Pulseq's own reference `.h5` at a 1e-4 bar (worst actual
-margin 4.3e-6). Parsing runs at parity with the Rust version. The Siemens DSV and INF readers are
-not started.
+waveform expansion, the sampler/k-space and the Siemens `.dsv` reader are ported and verified
+bit-exact against the Rust implementation — 221 differential tests covering every event library,
+every shape, the parse-error messages, 24.8 M gradient corners across all three gradient modes,
+27.9 M k-space points and every `.dsv` channel in the corpus. The port is also checked
+independently against Pulseq's own reference `.h5` at a 1e-4 bar (worst actual margin 4.3e-6).
+Parsing runs at parity with the Rust version. The Siemens INF reader, and `DsvSet` behind the same
+interface as `Sequence`, are not started.
 
 ## Build and test
 

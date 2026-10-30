@@ -12,7 +12,8 @@ set(SEQ2WAVEFORM_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/parser.cpp
     ${CMAKE_CURRENT_LIST_DIR}/waveform.cpp
     ${CMAKE_CURRENT_LIST_DIR}/sample.cpp
-    # Port order (see ../PORTING.md): dsv.cpp, inf.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/dsv.cpp
+    # Port order (see ../PORTING.md): inf.cpp
 )
 
 add_library(seq2waveform_core STATIC ${SEQ2WAVEFORM_CORE_SOURCES})

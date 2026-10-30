@@ -512,3 +512,170 @@ def test_unreferenced_adc_matches_rust(tmp_path):
     _, ckx, cky, ckz, _ = c.adc_kspace_flat()
     for ax, want, got in (("x", rkx, ckx), ("y", rky, cky), ("z", rkz, ckz)):
         assert np.array_equal(got, np.asarray(want)), f"k{ax} differs for an unreferenced ADC"
+
+
+
+# --- the Siemens .dsv reader (port step 5) --------------------------------------------------
+#
+# Parameterised over the .dsv channels in the corpus rather than just the three gradients. There
+# are 14 kinds and they cover a wide spread: rasters of 1, 5 and 10 us, and units of mT/m,
+# "mT/m * ms", Volt, Degree, T/s and "-". Two of them (CON, ERR) carry no VERTFACTOR at all and
+# are rejected by both readers -- the rejection is compared too, since agreeing on what to refuse
+# is as much a part of the port as agreeing on what to decode.
+#
+# Sizes force a split, and the numbers are worth recording. The corpus holds 70 non-INF channels
+# over ~260 MB, and a `cones` channel decodes to 63.5 MILLION samples -- one dense reconstruction
+# is a 508 MB array, so asking for one per channel per implementation exhausts memory long before
+# patience. So: corners (the decode itself, which streams) for every channel; the dense
+# reconstruction for one representative channel per kind, which still exercises `value_at` over
+# every raster and unit in the corpus.
+
+DSV_SIZE_LIMIT = 2_000_000
+
+
+def _dsv_channels():
+    if not TESTDATA.exists():
+        return []
+    return sorted(
+        f
+        for d in TESTDATA.iterdir()
+        if d.is_dir() and (d / "dsv").is_dir()
+        for f in (d / "dsv").glob("*.dsv")
+        if not f.name.endswith("_INF.dsv")  # not a waveform channel; see the rejection test
+    )
+
+
+def _kind(p):
+    return p.stem.replace("SimulationProtocol_", "")
+
+
+def _dsv_id(p):
+    return f"{p.parent.parent.name}/{_kind(p)}"
+
+
+_ALL = _dsv_channels()
+DSV_SMALL = [f for f in _ALL if f.stat().st_size < DSV_SIZE_LIMIT]
+DSV_LARGE = [f for f in _ALL if f.stat().st_size >= DSV_SIZE_LIMIT]
+# The smallest file of each kind: one per raster/unit combination, for the expensive checks.
+DSV_PER_KIND = [
+    min((f for f in _ALL if _kind(f) == k), key=lambda p: p.stat().st_size)
+    for k in sorted({_kind(f) for f in _ALL})
+]
+
+
+@pytest.fixture(params=DSV_SMALL, ids=_dsv_id)
+def dsv_small(request):
+    return str(request.param)
+
+
+@pytest.fixture(params=DSV_LARGE, ids=_dsv_id)
+def dsv_large(request):
+    return str(request.param)
+
+
+@pytest.fixture(params=DSV_PER_KIND, ids=_dsv_id)
+def dsv_kind(request):
+    return str(request.param)
+
+
+def _compare_corners(path):
+    """Compare the decoded corners, or the rejection if Rust refuses the channel.
+
+    Returns the corner count, or -1 when both readers rejected it.
+    """
+    try:
+        rt, rv, rraster, runit = rust.read_dsv_pwl(path)
+    except ValueError as exc:
+        with pytest.raises(ValueError) as cpp_exc:
+            cpp.read_dsv_pwl(path)
+        assert str(cpp_exc.value) == str(exc), "rejection messages differ"
+        return -1
+
+    ct, cv, craster, cunit = cpp.read_dsv_pwl(path)
+    assert craster == rraster, "raster_time differs"
+    assert cunit == runit, "unit differs"
+    assert len(ct) == len(rt), f"{len(ct)} corners vs Rust's {len(rt)}"
+    assert np.array_equal(ct, rt), "corner times differ"
+    assert np.array_equal(cv, rv), "corner values differ"
+    return len(ct)
+
+
+@pytest.mark.skipif(not DSV_SMALL, reason="no .dsv channels in the corpus")
+def test_dsv_corners_match_rust(dsv_small):
+    """The decode itself: run-length expansion, slope-change detection, VERTFACTOR division.
+
+    Exact equality -- the accumulator is an integer, so there is nowhere for a tolerance to hide.
+    """
+    assert _compare_corners(dsv_small) != 0, "decoded zero corners; nothing was compared"
+
+
+@pytest.mark.skipif(not DSV_LARGE, reason="no large .dsv channels in the corpus")
+def test_dsv_large_channel_corners_match_rust(dsv_large):
+    """The same decode on the multi-megabyte channels.
+
+    These are where a streaming bug would show: `cones` runs to 63.5 M samples, and the whole
+    point of decoding to corners is never materialising that.
+    """
+    assert _compare_corners(dsv_large) != 0, "decoded zero corners; nothing was compared"
+
+
+@pytest.mark.skipif(not DSV_PER_KIND, reason="no .dsv channels in the corpus")
+def test_dsv_dense_matches_rust(dsv_kind):
+    """The dense reconstruction: the decode plus `value_at` at every sample center."""
+    try:
+        rvals, rraster, runit = rust.read_dsv(dsv_kind)
+    except ValueError:
+        pytest.skip("both readers reject this kind; compared in test_dsv_corners_match_rust")
+    cvals, craster, cunit = cpp.read_dsv(dsv_kind)
+    assert craster == rraster and cunit == runit
+    assert len(cvals) == len(rvals), f"{len(cvals)} samples vs Rust's {len(rvals)}"
+    assert np.array_equal(cvals, rvals), "dense values differ"
+
+
+@pytest.mark.skipif(not DSV_PER_KIND, reason="no .dsv channels in the corpus")
+def test_dsv_corners_reproduce_the_dense_samples(dsv_kind):
+    """Sampling the decoded corners at `(k+0.5)*raster` reproduces the dense samples exactly.
+
+    The decoder's own invariant, independent of Rust: a run of equal deltas is a straight line and
+    interpolating a line gives the line back, so the corner form loses nothing relative to the
+    dense one -- which is the claim that justifies never building the dense array.
+
+    Resampled through `PiecewiseLinear`, not `np.interp`, and that matters: `PiecewiseLinear`
+    interpolates from integer picosecond times, exactly as `dense()` does internally, so this can
+    assert bit equality. `np.interp` works in float seconds and disagrees in the last few digits
+    wherever the slope is steep, which would force a tolerance and turn a sharp test into a vague
+    one.
+    """
+    try:
+        dense, raster, _ = cpp.read_dsv(dsv_kind)
+    except ValueError:
+        pytest.skip("both readers reject this kind")
+    if dense.size == 0:
+        pytest.skip("empty channel")
+    ct, cv, _, _ = cpp.read_dsv_pwl(dsv_kind)
+    w = cpp.PiecewiseLinear(ct, cv)
+    times = (np.arange(dense.size, dtype=np.float64) + 0.5) * raster
+    assert np.array_equal(w.sample_at_sorted(times), dense), "corners do not reproduce the samples"
+
+
+def test_dsv_rejects_the_inf_identically():
+    """The INF is not a waveform channel, and both readers must say so the same way.
+
+    It has `[SYNCTYPE]`/`[INFO]` and an ASCII event table instead of `[DEFINITIONS]`/`[VALUES]`,
+    so the reader runs to EOF and then fails on the missing `VERTFACTOR`. Checked on the smallest
+    INF only: they run to 142 MB, and reading one is the whole cost of this test.
+    """
+    infs = sorted(
+        (f for d in TESTDATA.iterdir() if d.is_dir() and (d / "dsv").is_dir()
+         for f in (d / "dsv").glob("*_INF.dsv")),
+        key=lambda p: p.stat().st_size,
+    )
+    if not infs:
+        pytest.skip("no INF files in the corpus")
+    path = str(infs[0])
+    with pytest.raises(ValueError) as rust_exc:
+        rust.read_dsv(path)
+    with pytest.raises(ValueError) as cpp_exc:
+        cpp.read_dsv(path)
+    assert str(cpp_exc.value) == str(rust_exc.value), "rejection messages differ"
+    assert "VERTFACTOR" in str(cpp_exc.value)

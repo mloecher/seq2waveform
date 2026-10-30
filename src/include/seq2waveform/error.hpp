@@ -34,4 +34,19 @@ private:
     std::string message_;
 };
 
+/// A malformed Siemens `.dsv` / `.inf` file. `what()` matches Rust's `Error::Dsv` Display:
+/// `"DSV format error: {message}"`. These files carry no line numbers worth reporting -- a bad
+/// value line is quoted in the message instead.
+class DsvError : public std::runtime_error {
+public:
+    explicit DsvError(const std::string& message)
+        : std::runtime_error("DSV format error: " + message), message_(message) {}
+
+    /// The message on its own, without the prefix.
+    const std::string& message() const { return message_; }
+
+private:
+    std::string message_;
+};
+
 }  // namespace s2w

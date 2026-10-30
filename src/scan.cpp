@@ -106,6 +106,10 @@ bool parse_usize(std::string_view s, std::size_t& out) {
     return parse_whole_int(s, out);
 }
 
+bool parse_i64(std::string_view s, std::int64_t& out) {
+    return parse_whole_int(s, out);
+}
+
 std::int64_t saturating_i64(double x) {
     if (std::isnan(x)) {
         return 0;  // Rust's float-to-int cast maps NaN to 0

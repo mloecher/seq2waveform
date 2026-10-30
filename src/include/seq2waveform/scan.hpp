@@ -58,6 +58,10 @@ bool parse_u32(std::string_view s, std::uint32_t& out);
 /// Parse the whole of `s` as a size_t -- Rust's `parse::<usize>()`, same rules as `parse_u32`.
 bool parse_usize(std::string_view s, std::size_t& out);
 
+/// Parse the whole of `s` as an int64 -- Rust's `parse::<i64>()`. Accepts a leading `-` or `+`,
+/// rejects a decimal point and overflow. The `.dsv` delta stream is int64.
+bool parse_i64(std::string_view s, std::int64_t& out);
+
 /// Rust's `as i64` cast on a double: saturating at the int64 bounds, with NaN mapping to 0.
 ///
 /// A plain `static_cast` is undefined behaviour outside the range, so a corrupt shape repeat count

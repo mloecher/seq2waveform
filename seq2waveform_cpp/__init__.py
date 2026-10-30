@@ -9,7 +9,16 @@ port scaffolding for the parity suite, mirroring two functions of the same names
 and both go away at cut-over.
 """
 
-from ._core import PiecewiseLinear, Sampler, Sequence, parse_file, ps_from_secs, ps_to_secs
+from ._core import (
+    PiecewiseLinear,
+    Sampler,
+    Sequence,
+    parse_file,
+    ps_from_secs,
+    ps_to_secs,
+    read_dsv,
+    read_dsv_pwl,
+)
 
 __all__ = [
     "PiecewiseLinear",
@@ -18,4 +27,6 @@ __all__ = [
     "parse_file",
     "ps_from_secs",
     "ps_to_secs",
+    "read_dsv",
+    "read_dsv_pwl",
 ]

@@ -503,6 +503,55 @@ class Sampler:
             this is the fast path for whole-sequence k-space and for delay sweeps.
         """
 
+def read_dsv(path: str) -> tuple:
+    """
+    Read a Siemens `.dsv` channel as dense per-sample values.
+
+    Parameters
+    ----------
+    path : str
+        Path to one `.dsv` channel file.
+
+    Returns
+    -------
+    values : ndarray of float64
+        Per-sample values in physical units (`VERTFACTOR` applied).
+    raster_time : float
+        Sample spacing (s), from `HORIDELTA`.
+    unit : str
+        The `VERTUNITNAME` string, e.g. "mT/m".
+
+    Raises
+    ------
+    ValueError
+        If a value line is not an integer, or `HORIDELTA`/`VERTFACTOR` is missing.
+    """
+
+def read_dsv_pwl(path: str) -> tuple:
+    """
+    Read a Siemens `.dsv` channel as piecewise-linear corners.
+
+    The `[VALUES]` body is a run-length-encoded derivative, so a run of equal deltas is
+    one constant-slope segment and only slope changes are kept. The dense array is never
+    built, so this is both sparser and cheaper than `read_dsv`.
+
+    Parameters
+    ----------
+    path : str
+        Path to one `.dsv` channel file.
+
+    Returns
+    -------
+    corner_times : ndarray of float64
+        Corner times (s), interval-centered at `(k+0.5)*raster_time`.
+    corner_values : ndarray of float64
+        Corner values in physical units.
+    raster_time : float
+        Sample spacing (s).
+    unit : str
+        The `VERTUNITNAME` string.
+    """
+
 def parse_shapes(path: str) -> dict:
     """
     Dump the `[SHAPES]` library of a `.seq` file.
