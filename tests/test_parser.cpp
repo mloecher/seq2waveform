@@ -184,7 +184,7 @@ void parse_error_carries_the_source_line() {
     } catch (const s2w::ParseError& e) {
         check(e.line() == 4, "the error names line 4");
         equal(e.message(), "missing/invalid trap rise", "the error names the field");
-        // The full text is what reaches Python, and what the parity suite compares.
+        // The full text is what reaches Python, so it is pinned here.
         equal(e.what(), "parse error at line 4: missing/invalid trap rise", "formatted message");
     }
 }

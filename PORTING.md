@@ -151,9 +151,11 @@ next section shows.
 ### Whole-pipeline performance, measured
 
 Done once the port hit full parity, with **both sides in release** and the parity suite as the
-check that nothing moved. Run `scripts/bench.py --compare-rust` to reproduce, and
-`tests/bench_expand.cpp` for a native breakdown with no Python in the way (it mirrors the Rust
-repo's `examples/bench_expand.rs` + `examples/time_kspace.rs`, phase for phase).
+check that nothing moved. The ratios below are therefore history: they cannot be reproduced
+now that the oracle is gone (`scripts/bench.py` lost its `--compare-rust` at cut-over), and
+`adc_kspace_flat()` has since improved again — see the next section. Use
+`tests/bench_expand.cpp` for a native breakdown with no Python in the way; it mirrors the Rust
+repo's `examples/bench_expand.rs` + `examples/time_kspace.rs`, phase for phase.
 
 `cones`, the worst case at 14.9 MB and 21,140 blocks, C++/Rust ratios from Python:
 
@@ -200,53 +202,110 @@ was true here every time. And **a 1.2x gap and a 400x gap look the same from Pyt
 `adc_times` had been in the tree since step 3 and the parity suite never minded, because it was
 correct, only slow.
 
+### The second pass: the whole codebase, once the goldens could see it
+
+Step 8 was driven by a native breakdown of one pipeline, so it found what that pipeline touched.
+With the snapshots in place the rest of the library became safe to change, and reading all 4,700
+lines for cost rather than for parity turned up four things bigger than anything on the list
+below. Two classes, and both are worth recognising by shape:
+
+**Wrong complexity.** `RfEvent::rfd_peak` scanned the entire RFD corner array twice, to find the
+maximum inside one pulse's window, once per RF event — 4,236 events over 309,230 corners on
+`cones`, 1.3 G iterations, and it sits under every DSV k-space call because `excitations()` goes
+through it. The corners are sorted, so the window is two binary searches. `DsvChannel::dense()`
+had the same shape one level down: `value_at` per sample, a binary search each, over 63.5 M
+strictly increasing sample times where a forward sweep is O(n + m). Neither was visible from the
+`.seq` benchmarks, because neither is on the `.seq` path.
+
+**Redundant passes.** `adc_excitations()` needed the first sample time of each ADC event and got
+it by building every sample time in the run: 172 MB to read 4,216 numbers. The `.dsv` reader still
+used `std::getline` — one allocation per line, on files that are one integer per line and millions
+of lines long — although the `.seq` parser and the INF reader had both already been converted to
+slurp-and-split for exactly that reason. And in the bindings, `trace_to_py` and `flat_to_py` took
+their result by `const&`, so they had nothing movable to hand `to_numpy`, whose entire purpose is
+to move a vector to the heap and let numpy view it: they copied each axis into a local first,
+which on a whole-run k-space is 517 MB duplicated to defeat the helper written to avoid exactly
+that.
+
+`cones` at the Python level, best of n, the two builds run back to back so a slow moment on the
+machine cannot flatter either:
+
+| call | before | after | |
+|---|---|---|---|
+| `adc_excitations()` | 96.1 ms | 0.7 ms | **137x** |
+| `DsvSet.adc_excitations()` | 849.1 ms | 7.9 ms | **108x** |
+| `DsvSet.adc_kspace_flat()` | 1252.5 ms | 445.5 ms | **2.8x** |
+| `read_dsv()` (dense) | 1287.6 ms | 578.2 ms | **2.2x** |
+| `read_inf_rf()` | 1664.3 ms | 866.3 ms | **1.9x** |
+| `read_dsv_pwl()` | 489.1 ms | 359.8 ms | 1.36x |
+| `DsvSet(...)` | 2271.1 ms | 1912.3 ms | 1.19x |
+| `read_inf_adc()` | 486.1 ms | 427.1 ms | 1.14x |
+| `adc_kspace_flat()` | 612.6 ms | 549.6 ms | 1.11x |
+| `gradients_dense(1e-4)` | 219.0 ms | 198.8 ms | 1.10x |
+
+Unchanged, within noise: the `.seq` parse, `gradient()`, `adc_times()` and `gradient_axis_dense()`
+— nothing in this pass touches them. Judge the noise floor from the parse, which is the canary:
+it reads 80.6 and 76.1 ms in the two runs with no change to the parser at all, so treat anything
+under about 1.1x here as unproven.
+
+Two mistakes, both caught only by measuring, both worth repeating because the first kind is easy
+to make while tidying:
+
+- Routing the vector-returning `sample_at_sorted` through the new write-into-buffer form made it
+  zero-fill an output it immediately overwrites. The sweep rule now lives in one helper that both
+  forms call, so one can reserve and the other write in place; `moments_at_sorted`, which already
+  had that defect, is fixed the same way. **A refactor toward "one implementation" is a
+  performance change, and needs measuring like one.**
+- Replacing `find('\n')` with an inline scan, on the theory that a memchr call per four-byte line
+  was the `.dsv` reader's cost, did nothing at all (364.7 against 359.6 ms). It is not in the tree.
+  The reader's remaining cost is the per-line integer parse, which is the actual work.
+
 ### What is left on the table, measured
 
-Three opportunities were quantified and **not** taken. The numbers are from
-`tests/bench_expand.cpp` on `cones`, where `adc_kspace_flat()` costs ~450 ms in total.
+The three below were quantified at step 8 and are still **not** taken. They were declined then
+because each risks *silently wrong output* rather than a crash, with the differential suite just
+deleted; `test-golden` has since removed that objection, so what is left is simply that none of
+them is worth much.
 
-| opportunity | worth | why not taken |
+| opportunity | worth | why still not taken |
 |---|---|---|
 | `adc_events()` builds one vector per event | ~22 ms (5%) | needs an interface change |
-| `kspace_flat` zero-fills 517 MB it then overwrites | up to ~37 ms (8%) | needs uninitialised storage |
-| nothing is cached between calls | up to ~130 ms per repeat call | changes semantics |
+| `kspace_flat` zero-fills 517 MB it then overwrites | 15-25 ms (4%) | needs uninitialised storage |
+| nothing is cached between calls | up to ~130 ms per repeat call | changes the API's contract |
 
 **Per-event vectors.** `adc_events()` takes 84.3 ms to produce 21.5 M sample times as 4216
-separate vectors; `adc_times()` produces the *same* 21.5 M values into one vector in 62.1 ms. The
-difference is 4216 allocations at roughly 5 us each. The flat k-space path then concatenates them
-all into one array anyway, so for that path the per-event form is pure overhead — it allocates,
-fills, copies out and frees. Building the flat array directly would need a streaming variant of
-the `adc_events()` virtual, which means touching `WaveformSource` and both implementations.
+separate vectors; `adc_times()` produces the *same* values into one vector in 62.1 ms. The
+difference is 4216 allocations at roughly 5 µs each, and the flat k-space path concatenates them
+all into one array anyway, so for that path the per-event form is pure overhead. Building the flat
+array directly needs a streaming variant of the `adc_events()` virtual, i.e. `WaveformSource` and
+both implementations. Note that `adc_event_starts()` is the cheap half of this done already: where
+a caller needs one number per event rather than all the samples, it no longer pays for them.
 
-**The zero-fill.** `kspace_flat` starts with three `std::vector<double>(n, 0.0)` and then
-overwrites every element, because `flatten_specs` builds offsets that cover `[0, n)` contiguously.
-Allocating 517 MB zeroed costs 37 ms. Careful though: part of that is the page faults from first
-touching the memory, which an uninitialised allocation would still pay on first *write*. The
-genuinely avoidable share is the zeroing alone, so call it 15-25 ms rather than 37. Avoiding it
-means storage that `std::vector` cannot give (it always initialises), so `FlatK` would have to hold
-something else, and that type is what the bindings hand to numpy.
+**The zero-fill.** `kspace_flat` starts with three `std::vector<double>(n, 0.0)` and overwrites
+every element, because `flatten_specs` builds offsets covering `[0, n)` contiguously. Allocating
+517 MB zeroed costs ~37 ms, but part of that is the page faults from first touching the memory,
+which an uninitialised allocation still pays on first *write* — the genuinely avoidable share is
+the zeroing alone. Avoiding it means storage `std::vector` cannot give, so `FlatK` would have to
+hold something else, and that type is what the bindings hand to numpy.
 
-**Caching.** Nothing is memoised: `sampler()` expands all three gradient channels every call
-(129.8 ms), and `gradients_dense()` expands them again (147.8 ms, almost all of it the same three
-expansions). A caller doing `gradients_dense()` then `adc_kspace_flat()` pays for the same work
-twice. Caching the expansion would be the largest single win available — but `Sequence` has a
-mutable `gradient_mode`, so a cache has to be invalidated on it, and a stale cache returns
-*plausible wrong numbers* rather than failing.
+**Caching.** Nothing is memoised: `sampler()` expands all three gradient channels every call, and
+`gradients_dense()` expands them again. A caller doing both pays for the same work twice. This is
+the largest single win available and still the one to avoid: `Sequence` has a mutable
+`gradient_mode` for a cache to go stale behind, and nothing being memoised is what makes repeated
+calls honest and these numbers mean what they say.
 
-All three shared a reason beyond their cost when they were measured: each risks *silently wrong
-output* rather than a crash — an offset error, uninitialised memory, a stale cache — and at that
-moment the differential suite that would have caught it had just been deleted. That reason has
-since expired. `test-golden` pins all three gradient modes and the flat k-space bit-exactly on the
-corpus, which is precisely the output each of these would corrupt, so they are now ordinary
-optimisations: make the change, run `pixi run test`, and a mistake shows up as a moved column
-rather than as a plausible wrong number.
+Two more, found in this pass and left alone deliberately:
 
-What has not changed is that none of them is worth much. The two cheap ones are 5% and 8% of one
-call. The caching one is larger but changes the API's contract — nothing is memoised today, which
-is what makes repeated calls honest and the benchmark numbers meaningful — and `Sequence` has a
-mutable `gradient_mode` for a cache to go stale behind. The library is within 1.2-1.4x of the Rust
-original on the array-building calls and at parity or ahead on parse and `adc_times`; that is good
-enough that the right trigger for any of this is a profile of a real workload, not this table.
+- **The `.dsv` per-line integer parse.** A channel reads at ~64 MB/s against the `.seq` parser's
+  ~198 MB/s on much longer rows, so roughly 55 ns goes on each four-byte line. It is not the
+  newline scan (measured above). Beating `std::from_chars` here means a hand-rolled digit loop
+  that re-implements `parse_i64`'s sign handling, overflow rejection and error message, in the one
+  reader where a wrong value is a wrong waveform. Worth about 1 s on a `DsvSet(...)` of `cones`.
+- **The event libraries are `std::map`.** A red-black tree lookup per block per axis, chosen so
+  iteration order was reproducible while the oracle existed. `unordered_map` would be faster, but
+  parse is already at 0.96x of Rust, which uses a `HashMap` — so this is not where the time is.
+
+The right trigger for any of these is a profile of a real workload, not this table.
 
 ## Layout
 

@@ -120,7 +120,7 @@ void a_bad_value_line_raises() {
         parse_dsv(bad);
         check(false, "a non-integer value line raises");
     } catch (const s2w::DsvError& e) {
-        // The full text is what reaches Python, and what the parity suite compares.
+        // The full text is what reaches Python, so it is pinned here.
         check(std::string(e.what()) == "DSV format error: non-integer value line: \"not-a-number\"",
               "the error quotes the offending line");
     }

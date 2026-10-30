@@ -211,7 +211,7 @@ void unsorted_times_match_the_sorted_sweep() {
 
 void adc_with_no_preceding_excitation() {
     // No Rust counterpart, and no dataset reaches it: across all five corpora every ADC has an
-    // excitation before it, so the sentinel path is untested by the parity suite. An ADC in the
+    // excitation before it, so no data-driven test reaches the sentinel path. An ADC in the
     // first block with no RF anywhere must report (nan, nan, nan) and integrate k-space from the
     // start of the waveform rather than from garbage.
     const char* no_rf =

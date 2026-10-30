@@ -78,7 +78,7 @@ std::string debug_quote(std::string_view s) {
 }
 
 /// Field `i` as a double, or a `ParseError`. Rust's `pf`, message wording included -- it reaches
-/// Python verbatim, and the parity suite compares it.
+/// Python verbatim, so `tests/test_parser.cpp` pins it.
 double pf(const std::vector<std::string_view>& f, std::size_t i, const char* what,
           std::size_t line) {
     double v = 0.0;
