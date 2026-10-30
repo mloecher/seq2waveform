@@ -30,12 +30,24 @@ Built and verified:
 - `src/include/seq2waveform/pwl.hpp`, `src/pwl.cpp` — `PiecewiseLinear`: `value_at`,
   `sample_at`, `sample_at_sorted`, `integral`, `cumulative_moment`, `moment_to`,
   `moments_at_sorted`. Ported line-for-line from `crates/seq2waveform/src/pwl.rs`.
+- `src/include/seq2waveform/scan.hpp`, `src/scan.cpp` — `trim`, `fields`, `parse_f64`,
+  `parse_u32`, `parse_usize`, `saturating_i64`. Reproduces Rust's `str::parse` semantics; see
+  **Scanning numbers**.
+- `src/include/seq2waveform/error.hpp` — `ParseError`, carrying the 1-based source line and
+  formatting `what()` exactly as Rust's `Display` does.
+- `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
+  `Shape::decompressed`, `Sequence::definition_f64`.
+- `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
 - `bindings/seq2waveform_wrapper.cpp` — nanobind module `_core`, with the zero-copy `to_numpy`
   capsule helper that every array return must go through.
 - `tests/test_pwl.cpp` — the Rust unit tests from `time.rs` and `pwl.rs`, ported.
+- `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
+  scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
+  41 of them as of step 2; it compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed shape
+  samples across the five datasets, all exactly equal.
 
-Not started: parser, model, waveform expansion, sampler, DSV, INF. See **Port order**.
+Not started: waveform expansion, sampler, DSV, INF. See **Port order**.
 
 ## Layout
 
@@ -173,6 +185,22 @@ Each of these was found the hard way. Getting one wrong produces output that is 
 - **The sorted sweep's cursor starts at `max(upper_bound(times[0]), 1)`** and is never rewound by a
   clamp branch. Both ports rely on `times` being non-decreasing for that path.
 
+### Scanning numbers
+
+C++-specific, and learned the hard way in step 2: Rust gets all of this from `str::parse`, so none
+of it is visible in the Rust source. `src/scan.cpp` reproduces it, and `tests/test_parser.cpp`
+pins it.
+
+- **Use `std::from_chars`, never `strtod`.** `strtod` honours the C locale's decimal separator, so
+  under a comma locale it reads `1e-05` as `1`. `from_chars` is locale-independent and correctly
+  rounded. (This is why the build requires floating-point `from_chars`; see **Known gaps**.)
+- **The whole token must be consumed.** Rust's `parse()` rejects trailing characters, so `1.5x` is
+  a failure, not `1.5`. `from_chars` reports where it stopped — compare that against the end.
+- **A leading `+` has to be stripped by hand.** Rust accepts `+1.5`; `from_chars` rejects it.
+- **Float-to-int casts need `saturating_i64`.** Rust's `as i64` saturates and maps NaN to `0`; the
+  C++ cast is undefined outside the range. The shape repeat count is the one place it is reachable
+  from file data.
+
 ### Pulseq `.seq` parsing and expansion
 
 - Format **v1.4/1.5**. v1.3 and unknown versions are untested — add a version guard rather than
@@ -180,6 +208,28 @@ Each of these was found the hard way. Getting one wrong produces output that is 
 - **Event id `0` means "no event"**, per block, per event type.
 - **Units are canonicalised at parse time**: seconds, Hz, Hz/m, radians. Per-table scales are
   applied in the parser so nothing downstream rescales.
+- **Copy each unit scale's exact spelling.** `240.0 * 1e-6` and `240.0 / 1e6` are *different*
+  doubles (`0.00023999999999999998` vs `0.00024`), and the parity test compares exactly, so
+  `* 1e-6` has to stay `* 1e-6`. RF/trap/trigger times and `adc delay` are µs; `adc dwell` is ns.
+- **Error lines count blank and comment lines.** Rust enumerates lines *before* skipping them, so
+  the reported number is the real file line. Counting only content lines is the easy way to get a
+  parser that is right about everything except its error messages.
+- **Block durations resolve after the whole file is read.** They are stored in
+  `BlockDurationRaster` units and `[DEFINITIONS]` may come *after* `[BLOCKS]`, so rows are held
+  raw and scaled at the end. Default raster `10e-6`.
+- **`[SHAPES]` is a state machine across lines.** `shape_id` closes the previous shape and opens a
+  new one; EOF closes the last. Three quirks to preserve: the `shape_id`/`num_samples` prefixes are
+  matched *without* requiring a following space (`shape_id1` parses); a `num_samples` line outside
+  any shape is silently dropped; and a repeated `[SHAPES]` header does *not* close the shape in
+  progress, while any other section header does.
+- **Shape decompression:** `data.size() == num_samples` means stored uncompressed — return it with
+  *no* cumulative sum. Otherwise the data are a run-length-encoded derivative (`v, v, k` = `v`
+  repeated `k+2` times, detected only when `i+2 < n`), expanded and then cumulatively summed in
+  order. The result's length is whatever the runs expand to; it is *not* forced to `num_samples`.
+- **A missing `use` column is normal, not an error** — v1.4 files have no such field, and it falls
+  back to `undefined`.
+- **Unknown sections and unknown `extension` names are skipped, not rejected**, and their rows are
+  dropped silently. See **Known gaps** 1.
 - **`restoreAdditionalShapeSamples`** reconstructs centres-raster arbitrary shapes. Invariant worth
   its own test: the per-interval mean of the reconstructed segment equals the stored centre sample
   (moment conservation). This is listed as a missing test in `TODO.md` — add it in C++.
@@ -256,9 +306,24 @@ Decide on each rather than porting the silence (from the Rust repo's `TODO.md`):
    warning**. The five datasets are unaffected — `cones` bakes its rotations into the per-interleaf
    waveforms, and matches both the h5 and the physical DSV — but a `.seq` using runtime `ROTATIONS`
    would produce wrong physical gradients silently. Minimum: warn. Better: apply the rotation.
-2. **Parse errors report line 0.** No line tracking. Worth fixing while writing a new parser.
+2. ~~**Parse errors report line 0.**~~ Stale — the Rust parser does track lines (`Error::at_line`
+   stamps the real number in the parse loop, and its own unit test asserts line 4). The C++ port
+   reproduces it, and `test_parse_error_matches_rust` compares the two messages verbatim.
 3. **No units layer.** See Gamma above.
 4. **Complex RF (B1 re/im) is built but never exposed.** The expander has it; the bindings do not.
+
+C++-specific, added by the port:
+
+5. **Floating-point `std::from_chars` is required** (MSVC 19.24+, libstdc++ 11+, libc++ 20+).
+   `src/scan.cpp` raises a `#error` if it is missing, which an older Apple Clang will be. Only
+   win-64 is built today; this will surface the first time the macOS cibuildwheel targets run, and
+   the fix is either a newer toolchain or a hand-written fallback — *not* `strtod`, which is
+   locale-dependent.
+6. **An out-of-range numeric token fails to parse** where Rust saturates: `1e999` is `inf` in Rust
+   and an error here. Unreachable in Pulseq data, and noted only so it is not mistaken for a bug.
+7. **`parse_model` / `parse_shapes` exist on both sides purely for parity testing** — the Rust
+   bindings had no model-level oracle beyond a block count. Neither is re-exported from its
+   package. Delete both at cut-over.
 
 ## Port order
 
@@ -266,8 +331,10 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
 `pixi run test` green.
 
 1. ~~`time.hpp`, `pwl.cpp`~~ — done.
-2. **`model.hpp` + `parser.cpp`** — plain structs plus the `[SECTION]` reader. Oracle:
-   `parse_file(path)` block count, then every event library compared field by field.
+2. ~~`model.hpp` + `parser.cpp`~~ — done, plus `scan.cpp` and `error.hpp`, which the Rust version
+   gets from the standard library. Oracle: `parse_file` block count, then every event library and
+   every shape compared field by field via `parse_model` / `parse_shapes`, and the parse-error
+   message compared verbatim.
 3. **`waveform.cpp`** — the hard one. Block walk, trapezoid corners,
    `restoreAdditionalShapeSamples`, the stitch, all three gradient modes. Oracle: `seq.gradient(ax)`
    corner times and values, exactly; then the h5 at 1e-4.
@@ -298,6 +365,9 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
   stub has — nothing else reaches the editor.
 - **Add each new `.cpp` to `src/seq2waveform_core.cmake`.** Tests and bindings then pick it up with
   no further wiring.
+- **All number and token scanning goes through `seq2waveform/scan.hpp`.** One place that matches
+  Rust's parsing rules is the only way the two readers agree; a stray `std::stod` or `atof` would
+  reintroduce locale dependence and partial parses. The `.dsv` and `.inf` readers reuse it.
 - **Never hand-edit `seq2waveform_cpp/_core.pyi`.** It is regenerated on every build.
 
 ---
@@ -315,8 +385,8 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 2 of the port order — model.hpp and parser.cpp, the Pulseq .seq
-reader (../seq2waveform/crates/seq2waveform/src/model.rs and .../parser/mod.rs).
+Scope for this session: step 3 of the port order — waveform.cpp, the block walk and gradient
+expansion (../seq2waveform/crates/seq2waveform/src/waveform.rs).
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say
@@ -335,7 +405,12 @@ Rules:
   If something fails, say so with the numbers rather than narrowing the test.
 - The generated stub seq2waveform_cpp/_core.pyi is build output — never edit it. Put docstrings in
   the nanobind def(...) calls, numpydoc style, and check they came through in the regenerated stub.
-- Do not change anything in ../seq2waveform — it must keep working until the final cut-over.
+- ../seq2waveform must keep working until the final cut-over, so do not change its behaviour. You
+  MAY add read-only introspection to its bindings when parity needs an oracle that does not exist
+  yet (step 2 had to, for the event libraries): additive pyfunctions only, not re-exported from the
+  package, documented as port scaffolding, added to python/seq2waveform/_seq2waveform.pyi so the
+  stub stays an exact match for the module, and listed in PORTING.md's known gaps for deletion at
+  cut-over. The Rust suite staying green is the test that you only added.
 
 Flag anything in PORTING.md's "Known gaps" list that this module touches, and tell me what you
 decided rather than silently inheriting the behaviour.

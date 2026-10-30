@@ -152,3 +152,107 @@ def test_picosecond_times_are_taken_verbatim(seq):
         assert np.array_equal(w.sample_at_sorted(times_ps), w.sample_at_sorted(times)), (
             f"g{ax}: picosecond and seconds paths differ"
         )
+
+
+# --- the parser (port step 2) --------------------------------------------------------------
+#
+# `parse_model` and `parse_shapes` are port scaffolding on both sides, reached through the private
+# extension module because neither package re-exports them. They are the only way to compare the
+# event libraries field by field: the public surface stops at a block count.
+
+rust_model = rust._seq2waveform.parse_model
+rust_shapes = rust._seq2waveform.parse_shapes
+cpp_model = cpp._core.parse_model
+cpp_shapes = cpp._core.parse_shapes
+
+# Every key both dumps must carry. Asserted on each side, so adding a field to one reader without
+# the other fails here rather than going unnoticed.
+MODEL_KEYS = {
+    "version",
+    "definitions",
+    "signature",
+    "blocks",
+    "rf",
+    "traps",
+    "arbs",
+    "adc",
+    "triggers",
+    "ext_nodes",
+    "ext_type_names",
+}
+# The id-keyed event libraries, compared entry by entry for a legible failure.
+LIBRARIES = ("rf", "traps", "arbs", "adc", "triggers", "ext_nodes")
+
+
+@pytest.fixture
+def seq_path(name):
+    return str(TESTDATA / name / f"{name}.seq")
+
+
+def test_block_count_matches_rust(seq_path):
+    """The `[BLOCKS]` row count agrees -- the coarsest check that the walk saw the same file."""
+    assert cpp.parse_file(seq_path) == rust.parse_file(seq_path)
+
+
+def test_parsed_model_matches_rust(seq_path):
+    """Every section the parser fills, compared field by field.
+
+    Exact equality on the floats: both readers scan the same decimal text with a correctly rounded
+    parser and apply the same unit scale in the same order, so even a one-ulp difference is a
+    porting bug -- most likely in the scanner or in the order of a multiplication.
+    """
+    got = cpp_model(seq_path)
+    want = rust_model(seq_path)
+    assert set(got) == MODEL_KEYS, "the C++ dump gained or lost a key"
+    assert set(want) == MODEL_KEYS, "the Rust dump gained or lost a key"
+
+    assert got["version"] == want["version"]
+    assert got["definitions"] == want["definitions"]
+    assert got["signature"] == want["signature"]
+    assert got["ext_type_names"] == want["ext_type_names"]
+
+    assert len(got["blocks"]) == len(want["blocks"]), "different number of blocks"
+    for i, (g, w) in enumerate(zip(got["blocks"], want["blocks"])):
+        assert g == w, f"block {i} differs"
+
+    for key in LIBRARIES:
+        assert set(got[key]) == set(want[key]), f"{key}: different ids"
+        for i in sorted(got[key]):
+            assert got[key][i] == want[key][i], f"{key}[{i}] differs"
+
+
+def test_shapes_match_rust(seq_path):
+    """`[SHAPES]` entries agree, both as stored and once decompressed.
+
+    The decompressed half is the real target: the run-length-on-derivative expansion and the
+    cumulative sum that follows it are where a port drifts, and the sum's result depends on the
+    accumulation order.
+    """
+    got = cpp_shapes(seq_path)
+    want = rust_shapes(seq_path)
+    assert set(got) == set(want), "different shape ids"
+    for i in sorted(got):
+        got_n, got_raw, got_dec = got[i]
+        want_n, want_raw, want_dec = want[i]
+        assert got_n == want_n, f"shape {i}: num_samples differs"
+        assert np.array_equal(got_raw, want_raw), f"shape {i}: stored data differs"
+        assert np.array_equal(got_dec, want_dec), f"shape {i}: decompressed samples differ"
+
+
+def test_parse_error_matches_rust(tmp_path):
+    """A malformed row fails the same way from both readers: same exception, same text.
+
+    This is the line counter end to end. Blank and comment lines count toward the number (Rust
+    enumerates before skipping them), the row parser names the offending field, and both sides
+    surface it as a ValueError -- so the message can be compared verbatim.
+    """
+    bad = tmp_path / "bad.seq"
+    bad.write_text("# comment\n\n[TRAP]\n\n1 100 x 6000 200 0\n")
+
+    with pytest.raises(ValueError) as cpp_err:
+        cpp.parse_file(str(bad))
+    with pytest.raises(ValueError) as rust_err:
+        rust.parse_file(str(bad))
+
+    assert str(cpp_err.value) == str(rust_err.value)
+    assert "line 5" in str(cpp_err.value), "the blank and comment lines were not counted"

@@ -9,11 +9,23 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/map.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
+#include <nanobind/stl/vector.h>
 
 #include <cstdint>
+#include <exception>
+#include <map>
+#include <string>
+#include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "seq2waveform/error.hpp"
+#include "seq2waveform/model.hpp"
+#include "seq2waveform/parser.hpp"
 #include "seq2waveform/pwl.hpp"
 #include "seq2waveform/time.hpp"
 
@@ -57,6 +69,104 @@ std::vector<s2w::Ps> ps_verbatim(In<std::int64_t> times) {
 
 std::vector<double> to_vector(In<double> a) {
     return std::vector<double>(a.data(), a.data() + a.shape(0));
+}
+
+// --- port-only model introspection ---------------------------------------
+//
+// `parse_model` and `parse_shapes` exist so the parity suite can compare a parsed sequence against
+// the Rust implementation field by field -- without them the only model-level oracle is a block
+// count. They mirror the Rust bindings' functions of the same names key for key and field for
+// field, so the two dicts must compare equal; keep them in step, and drop both at cut-over, when
+// the public API is `Sequence` rather than a dict.
+
+using BlockRow = std::tuple<std::uint32_t, double, std::uint32_t, std::uint32_t, std::uint32_t,
+                            std::uint32_t, std::uint32_t, std::uint32_t>;
+using RfRow = std::tuple<double, std::uint32_t, std::uint32_t, std::uint32_t, double, double,
+                         double, double, double, double, std::string>;
+using TrapRow = std::tuple<double, double, double, double, double>;
+using ArbRow = std::tuple<double, double, double, std::uint32_t, std::uint32_t, double>;
+using AdcRow =
+    std::tuple<std::uint32_t, double, double, double, double, double, double, std::uint32_t>;
+using TriggerRow = std::tuple<std::uint32_t, std::uint32_t, double, double>;
+using ExtNodeRow = std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
+
+nb::dict parse_model(const std::string& path) {
+    const s2w::Sequence seq = s2w::parse_file(path);
+
+    std::vector<BlockRow> blocks;
+    blocks.reserve(seq.blocks.size());
+    for (const s2w::Block& b : seq.blocks) {
+        blocks.emplace_back(b.num, b.duration, b.rf, b.gx, b.gy, b.gz, b.adc, b.ext);
+    }
+
+    std::map<std::uint32_t, RfRow> rf;
+    for (const auto& entry : seq.rf) {
+        const s2w::Rf& r = entry.second;
+        rf.emplace(entry.first,
+                   RfRow{r.amplitude, r.mag_shape, r.phase_shape, r.time_shape, r.center, r.delay,
+                         r.freq_ppm, r.phase_ppm, r.freq, r.phase, s2w::rf_use_name(r.use)});
+    }
+
+    // The gradient library splits into two dicts, one per variant, so a trapezoid can never
+    // silently compare equal to an arbitrary shape that happens to hold the same numbers.
+    std::map<std::uint32_t, TrapRow> traps;
+    std::map<std::uint32_t, ArbRow> arbs;
+    for (const auto& entry : seq.gradients) {
+        if (const s2w::Trap* t = std::get_if<s2w::Trap>(&entry.second)) {
+            traps.emplace(entry.first, TrapRow{t->amplitude, t->rise, t->flat, t->fall, t->delay});
+        } else {
+            const s2w::ArbitraryGrad& a = std::get<s2w::ArbitraryGrad>(entry.second);
+            arbs.emplace(entry.first,
+                         ArbRow{a.amplitude, a.first, a.last, a.amp_shape, a.time_shape, a.delay});
+        }
+    }
+
+    std::map<std::uint32_t, AdcRow> adc;
+    for (const auto& entry : seq.adc) {
+        const s2w::Adc& a = entry.second;
+        adc.emplace(entry.first, AdcRow{a.num, a.dwell, a.delay, a.freq_ppm, a.phase_ppm, a.freq,
+                                        a.phase, a.phase_shape});
+    }
+
+    std::map<std::uint32_t, TriggerRow> triggers;
+    for (const auto& entry : seq.triggers) {
+        const s2w::Trigger& t = entry.second;
+        triggers.emplace(entry.first, TriggerRow{t.trig_type, t.channel, t.delay, t.duration});
+    }
+
+    std::map<std::uint32_t, ExtNodeRow> ext_nodes;
+    for (const auto& entry : seq.ext_nodes) {
+        const s2w::ExtNode& n = entry.second;
+        ext_nodes.emplace(entry.first, ExtNodeRow{n.type_id, n.ref_id, n.next_id});
+    }
+
+    nb::dict d;
+    d["version"] = nb::make_tuple(seq.version.major, seq.version.minor, seq.version.revision);
+    d["definitions"] = nb::cast(seq.definitions);
+    d["signature"] = nb::cast(seq.signature);
+    d["blocks"] = nb::cast(blocks);
+    d["rf"] = nb::cast(rf);
+    d["traps"] = nb::cast(traps);
+    d["arbs"] = nb::cast(arbs);
+    d["adc"] = nb::cast(adc);
+    d["triggers"] = nb::cast(triggers);
+    d["ext_nodes"] = nb::cast(ext_nodes);
+    d["ext_type_names"] = nb::cast(seq.ext_type_names);
+    return d;
+}
+
+nb::dict parse_shapes(const std::string& path) {
+    const s2w::Sequence seq = s2w::parse_file(path);
+    std::map<std::uint32_t, nb::object> out;
+    for (const auto& entry : seq.shapes) {
+        std::vector<double> raw = entry.second.data;
+        std::vector<double> decompressed = entry.second.decompressed();
+        out.emplace(entry.first, nb::make_tuple(entry.second.num_samples, to_numpy(std::move(raw)),
+                                                to_numpy(std::move(decompressed))));
+    }
+    // The map caster builds the dict; borrow it as one so the generated stub says `dict` rather
+    // than `object`.
+    return nb::borrow<nb::dict>(nb::cast(out));
 }
 
 }  // namespace
@@ -229,4 +339,64 @@ NB_MODULE(_core, m) {
             return to_numpy(std::move(out));
         },
         "picoseconds"_a, "Convert exact int64 picoseconds back to float64 seconds.");
+
+    // A malformed line raises ValueError, as the Rust bindings' `err()` does, so the parity suite
+    // can compare the exception type and its text and not just the fact that both failed.
+    nb::register_exception_translator(
+        [](const std::exception_ptr& p, void*) {
+            try {
+                std::rethrow_exception(p);
+            } catch (const s2w::ParseError& e) {
+                PyErr_SetString(PyExc_ValueError, e.what());
+            }
+        },
+        nullptr);
+
+    m.def(
+        "parse_file",
+        [](const std::string& path) { return s2w::parse_file(path).blocks.size(); }, "path"_a,
+        "Parse a `.seq` file and return the number of blocks.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a Pulseq `.seq` file (format v1.4/1.5).\n\n"
+        "Returns\n"
+        "-------\n"
+        "int\n"
+        "    Number of rows in the `[BLOCKS]` table.\n\n"
+        "Raises\n"
+        "------\n"
+        "ValueError\n"
+        "    If a line is malformed; the message names the source line.");
+
+    m.def("parse_model", &parse_model, "path"_a,
+          "Dump a parsed `.seq` model as plain Python data.\n\n"
+          "Port scaffolding, not public API: it exists so the port's parity suite can compare the\n"
+          "parsed sequence against the Rust implementation field by field. Shapes are excluded --\n"
+          "see `parse_shapes`.\n\n"
+          "Parameters\n"
+          "----------\n"
+          "path : str\n"
+          "    Path to a Pulseq `.seq` file.\n\n"
+          "Returns\n"
+          "-------\n"
+          "dict\n"
+          "    Keys `version`, `definitions`, `signature`, `blocks`, `rf`, `traps`, `arbs`,\n"
+          "    `adc`, `triggers`, `ext_nodes` and `ext_type_names`. The event libraries are\n"
+          "    `{id: tuple}` in the field order of the corresponding struct; `blocks` is a list\n"
+          "    of `(num, duration_s, rf, gx, gy, gz, adc, ext)`. All times are in seconds.");
+
+    m.def("parse_shapes", &parse_shapes, "path"_a,
+          "Dump the `[SHAPES]` library of a `.seq` file.\n\n"
+          "Port scaffolding, like `parse_model`: kept separate because the arrays are large enough\n"
+          "that round-tripping them through Python lists would dominate the parity run.\n\n"
+          "Parameters\n"
+          "----------\n"
+          "path : str\n"
+          "    Path to a Pulseq `.seq` file.\n\n"
+          "Returns\n"
+          "-------\n"
+          "dict\n"
+          "    `{shape_id: (num_samples, raw, decompressed)}`, where `raw` is the on-disk (often\n"
+          "    run-length-compressed) data and `decompressed` is the expanded sample vector.");
 }

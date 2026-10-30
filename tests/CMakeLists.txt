@@ -4,3 +4,7 @@
 add_executable(test_pwl test_pwl.cpp)
 target_link_libraries(test_pwl PRIVATE seq2waveform_core)
 add_test(NAME pwl COMMAND test_pwl)
+
+add_executable(test_parser test_parser.cpp)
+target_link_libraries(test_parser PRIVATE seq2waveform_core)
+add_test(NAME parser COMMAND test_parser)

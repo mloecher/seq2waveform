@@ -1,14 +1,16 @@
-# The seq2waveform_core static library, shared by the Python build (cpp/CMakeLists.txt) and the
-# C++ tests (cpp/tests/CMakeLists.txt). Add every ported translation unit here -- the bindings and
+# The seq2waveform_core static library, shared by the Python build (../CMakeLists.txt) and the
+# C++ tests (../tests/CMakeLists.txt). Add every ported translation unit here -- the bindings and
 # the tests then both pick it up with no further wiring.
 #
 # cxx_std_17 matches gropt's core target, so the two libraries can be linked into one build if a
 # shared waveform core is ever wanted.
 
 set(SEQ2WAVEFORM_CORE_SOURCES
+    ${CMAKE_CURRENT_LIST_DIR}/scan.cpp
     ${CMAKE_CURRENT_LIST_DIR}/pwl.cpp
-    # Port order (see cpp/PORTING.md): parser.cpp, model.cpp, waveform.cpp, sample.cpp,
-    # dsv.cpp, inf.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/model.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/parser.cpp
+    # Port order (see ../PORTING.md): waveform.cpp, sample.cpp, dsv.cpp, inf.cpp
 )
 
 add_library(seq2waveform_core STATIC ${SEQ2WAVEFORM_CORE_SOURCES})
