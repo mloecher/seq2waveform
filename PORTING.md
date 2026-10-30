@@ -41,6 +41,11 @@ Built and verified:
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
   `Shape::decompressed`, `Sequence::definition_f64`.
 - `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
+- `src/include/seq2waveform/inf.hpp`, `src/inf.cpp` — the Siemens INF reader: the block/table
+  parse, the `MaxAdcSegmentLength` merge, the lead-in, SYNC triggers and RF events with their
+  RFD-refined centers. `merge_contiguous` and `split_cell` are also in `detail/inf_detail.hpp` for
+  the tests. Reads with the in-place line split, not `std::getline`: these are the largest files in
+  the corpus.
 - `src/include/seq2waveform/dsv.hpp`, `src/dsv.cpp` — the Siemens `.dsv` channel reader: the
   RLE-delta stream decoded straight to piecewise-linear corners, never materialising the dense
   array. `rle_to_piecewise` is also declared in `detail/dsv_detail.hpp` for the tests. `DsvSet`
@@ -63,7 +68,7 @@ Built and verified:
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  221 of them as of step 5. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
+  248 of them as of step 6. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
   shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
   ADC sample times, 4,601 RF events and 4,261 triggers; step 4 added 27.9 M flat k-space points.
   All exactly equal. A one-ULP perturbation of a single corner value does fail the suite, and
@@ -211,6 +216,29 @@ summary line, not just the exit code.
 **The two frames are the crux of this project.** The `.seq` and `.h5` share the Pulseq frame. The
 DSV lives in the Siemens frame, later by the INF-encoded lead-in. Everything that compares the two
 must shift by that lead-in, and must read it from the INF rather than fitting it.
+
+## What the corpus does and does not exercise
+
+Three branches are reachable only from synthetic input, because the five datasets simply never hit
+them. Each has a hand-built test, and each is somewhere a port drifts quietly — so check them by
+hand if you touch the matching code.
+
+| branch | why the corpus misses it | covered by |
+|---|---|---|
+| **Asymmetric RF center** (sub-raster RFD peak: plateau midpoint, or parabolic refinement) | measured: **zero** off-centre pulses across all five datasets — every pulse is symmetric, so the center is always the exact window middle | `test_asymmetric_rf_center_matches_rust` (a synthetic INF + RFD pair, with the expected centers derived by hand so a *shared* drift is caught too), plus two unit tests in `test_inf.cpp` |
+| **ADC with no preceding excitation** (far-past sentinel reference, `(nan, nan, nan)`) | every ADC in every dataset has an excitation before it | `test_unreferenced_adc_matches_rust`, `adc_with_no_preceding_excitation` |
+| **restore's main reconstruction** | `cones` is a spiral, so all 3531 of its shapes take the fallback | `girf` (20 shapes) and `restore_recovers_a_triangle` |
+
+What the corpus *does* exercise, worth knowing so a change there is not mistaken for noise: the
+`MaxAdcSegmentLength` merge fires on two datasets (`sync_osc` merges 20 raw segments into 5 logical
+events, `girf` 1200 into 300) and not on the other three; the lead-in is 1020 µs on all five; and
+the excitation/ADC count mismatch warning fires on four of five.
+
+**A trap when hand-building a `.dsv` fixture:** the `[VALUES]` body is itself run-length encoded,
+so `d, d, k` means "`d` repeated `k+2` times". A delta list with a repeated *adjacent* value
+decodes to something quite different from its `cumsum`. The synthetic RFD in the parity suite
+deliberately has no two adjacent deltas equal; the first version of that test did not, and the
+resulting envelope was nothing like the intended one.
 
 ## The `.dsv` channel kinds
 
@@ -476,8 +504,9 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
    closes the one thing step 3 left outstanding.
 5. ~~`dsv.cpp`~~ — done, against both `read_dsv_pwl` corners and `read_dsv` dense values, over
    every channel in the corpus rather than just the gradients. See **The `.dsv` channel kinds**.
-6. **`inf.cpp`** — INF parse, lead-in, ADC merge, triggers, RF centres. Oracle: `inf_lead_in`,
-   `read_inf_adc_events` grouping, `read_inf_sync`, `read_inf_rf`.
+6. ~~`inf.cpp`~~ — done, against `inf_lead_in`, `read_inf_adc`, `read_inf_adc_events`,
+   `read_inf_sync` and `read_inf_rf` on all five datasets, plus a synthetic pair for the
+   asymmetric RF center (see below).
 7. **`DsvSet`** behind the same interface as `Sequence`, so it stays a drop-in source.
 8. **Cut over.** Rename the Python package from `seq2waveform_cpp` to `seq2waveform`, drop `maturin`
    and the oracle task from `pyproject.toml`, move the dataset suite and the test corpus over from
@@ -522,8 +551,9 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 6 of the port order — inf.cpp, the Siemens INF reader
-(../seq2waveform/crates/seq2waveform/src/dsv/inf.rs).
+Scope for this session: step 7 of the port order — DsvSet as a second WaveformSource, so the same
+sampling/k-space pipeline runs on a DSV+INF set as on a .seq
+(../seq2waveform/crates/seq2waveform/src/dsv.rs, the `impl WaveformSource for DsvSet` block).
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say

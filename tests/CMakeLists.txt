@@ -21,6 +21,10 @@ add_executable(test_dsv test_dsv.cpp)
 target_link_libraries(test_dsv PRIVATE seq2waveform_core)
 add_test(NAME dsv COMMAND test_dsv)
 
+add_executable(test_inf test_inf.cpp)
+target_link_libraries(test_inf PRIVATE seq2waveform_core)
+add_test(NAME inf COMMAND test_inf)
+
 # Guards the vendored fast_float (see extern/fast_float/README.md): are fast_float and this
 # toolchain's std::from_chars bit-identical on real shape data, and what does each cost? Run it
 # after bumping the vendored version. Not a ctest -- it needs a dataset path.

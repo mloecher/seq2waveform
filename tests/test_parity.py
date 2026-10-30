@@ -15,6 +15,7 @@ A run that reports *skipped* found neither -- treat that as a failure, not a pas
 As modules land, extend this file alongside PORTING.md's checklist.
 """
 
+import functools
 import os
 from pathlib import Path
 
@@ -679,3 +680,165 @@ def test_dsv_rejects_the_inf_identically():
         cpp.read_dsv(path)
     assert str(cpp_exc.value) == str(rust_exc.value), "rejection messages differ"
     assert "VERTFACTOR" in str(cpp_exc.value)
+
+
+# --- the Siemens INF reader (port step 6) ---------------------------------------------------
+#
+# The INFs are the largest files in the corpus (142 MB for `cones`) and parsing one costs ~1.5 s in
+# C++ and ~4 s against the debug oracle, so the results are cached per dataset and the tests read
+# from the cache. Without that, five test functions re-parsing both sides would be ~80 s on its
+# own; with it, ~27 s.
+
+
+@functools.lru_cache(maxsize=None)
+def _inf_pair(name):
+    """Every INF-derived quantity for one dataset, from both readers. Parsed once each."""
+    d = TESTDATA / name / "dsv"
+    inf = next(iter(sorted(d.glob("*_INF.dsv"))), None)
+    rfd = next(iter(sorted(d.glob("*_RFD.dsv"))), None)
+    if inf is None:
+        return None
+    ip = str(inf)
+    out = {
+        "rust": {
+            "adc": rust.read_inf_adc(ip),
+            "events": rust.read_inf_adc_events(ip),
+            "sync": rust.read_inf_sync(ip),
+            "lead_in": rust.inf_lead_in(ip),
+            "rf": rust.read_inf_rf(ip, str(rfd)) if rfd else None,
+        },
+        "cpp": {
+            "adc": cpp.read_inf_adc(ip),
+            "events": cpp.read_inf_adc_events(ip),
+            "sync": cpp.read_inf_sync(ip),
+            "lead_in": cpp.inf_lead_in(ip),
+            "rf": cpp.read_inf_rf(ip, str(rfd)) if rfd else None,
+        },
+    }
+    return out
+
+
+@pytest.fixture
+def inf(name):
+    pair = _inf_pair(name)
+    if pair is None:
+        pytest.skip("dataset has no INF file")
+    return pair
+
+
+def test_inf_adc_times_match_rust(inf):
+    """All ADC sample times and the raw segment count, before the merge."""
+    (rt, rn), (ct, cn) = inf["rust"]["adc"], inf["cpp"]["adc"]
+    assert cn == rn, f"{cn} raw segments vs Rust's {rn}"
+    assert len(ct) == len(rt), f"{len(ct)} sample times vs Rust's {len(rt)}"
+    assert np.array_equal(ct, rt), "ADC sample times differ"
+    assert len(ct) > 0, "no ADC samples found; nothing was compared"
+
+
+def test_inf_adc_event_grouping_matches_rust(inf):
+    """The MaxAdcSegmentLength merge: which chunks belong to the same logical readout.
+
+    This is the part that has to agree with the `.seq`'s per-event grouping, and the corpus does
+    exercise it -- `sync_osc` merges 20 raw segments into 5 events and `girf` 1200 into 300.
+    """
+    rev, cev = inf["rust"]["events"], inf["cpp"]["events"]
+    assert len(cev) == len(rev), f"{len(cev)} logical events vs Rust's {len(rev)}"
+    for i, (want, got) in enumerate(zip(rev, cev)):
+        assert len(got) == len(want), f"event {i}: {len(got)} samples vs {len(want)}"
+        assert np.array_equal(got, want), f"event {i}: sample times differ"
+
+
+def test_inf_sync_events_match_rust(inf):
+    """SYNC-column events: name, time and duration."""
+    assert inf["cpp"]["sync"] == inf["rust"]["sync"], "SYNC events differ"
+
+
+def test_inf_lead_in_matches_rust(inf):
+    """The Pulseq-to-Siemens lead-in, which every DSV-frame comparison depends on."""
+    assert inf["cpp"]["lead_in"] == inf["rust"]["lead_in"]
+    # It is ~1020 us on every dataset in this corpus; a zero would mean the second block was
+    # never found, which would silently shift every DSV comparison.
+    assert inf["cpp"]["lead_in"] > 0.0, "lead-in is zero; the second event block was not found"
+
+
+def test_inf_rf_events_match_rust(inf):
+    """RF events, including the excitation center refined from the RFD envelope.
+
+    The center is the fiddliest number in the INF: the window middle for a symmetric pulse, the
+    sub-raster RFD peak (plateau midpoint or parabolic refinement) for an asymmetric one.
+    """
+    rrf, crf = inf["rust"]["rf"], inf["cpp"]["rf"]
+    if rrf is None:
+        pytest.skip("dataset has no RFD channel")
+    assert len(crf) == len(rrf), f"{len(crf)} RF events vs Rust's {len(rrf)}"
+    for i, (want, got) in enumerate(zip(rrf, crf)):
+        assert got == want, f"RF event {i} differs: {got} vs {want}"
+
+
+def _write_rfd(path, deltas, horidelta_us=1.0, vertfactor=1.0):
+    """A minimal RFD channel whose dense samples are cumsum(deltas)/vertfactor."""
+    body = "\n".join(str(d) for d in deltas)
+    path.write_text(
+        "[DEFINITIONS]\n"
+        f"HORIDELTA={horidelta_us:.6f}\n"
+        f"VERTFACTOR={vertfactor:.6f}\n"
+        "VERTUNITNAME=Volt\n"
+        "[VALUES]\n" + body + "\n;  end of graphic data file\n"
+    )
+
+
+def _write_inf(path, flip_deg=90.0, dur_us=9.0):
+    """A minimal INF with one event block holding one RF row at Rel.Time 0."""
+    path.write_text(
+        "* EventBlock 0 20\n"
+        "| Rel.Time | TXFlip/Dur | Freq/Phase | SYNC/Dur |\n"
+        f"|        0 | [sX]: {flip_deg}/{dur_us} |  |  |\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "case,deltas,expect_center_us",
+    [
+        # A sharp peak near the end of the window with unequal neighbours, so the parabolic
+        # refinement lands strictly between raster samples. cumsum = [0,1,3,6,10,15,21,30,10]:
+        # peak 30 at 7.5 us, vl=21, vr=10, denom=21-60+10=-29, p=0.5*(21-10)/-29 -> 7.310344... us.
+        ("sharp asymmetric peak", [0, 1, 2, 3, 4, 5, 6, 9, -20], 7.310344827586207),
+        # A two-sample flat maximum, off-centre: cumsum = [0,2,5,7,8,10,10,4,0], so the plateau
+        # spans 5.5..6.5 us and that branch returns its midpoint, 6.0 us.
+        ("off-centre plateau", [0, 2, 3, 2, 1, 2, 0, -6, -4], 6.0),
+    ],
+)
+def test_asymmetric_rf_center_matches_rust(tmp_path, case, deltas, expect_center_us):
+    """The asymmetric RF-center refinement, which no dataset in the corpus reaches.
+
+    Every pulse in all five corpora is symmetric (measured: zero off-centre pulses), so the
+    sub-raster RFD peak path -- plateau midpoint, or parabolic interpolation of the neighbouring
+    raster samples -- is untested by the parity suite without a synthetic pair. It is also the
+    fiddliest arithmetic in the INF reader, and an error there would shift a k-space reference by
+    up to half a pulse while still looking entirely plausible.
+
+    `expect_center_us` is derived by hand from the algorithm, so this pins the absolute answer as
+    well as the agreement: if both ports drifted the same way, the hand-computed value still
+    catches it.
+
+    Note the deltas: no two *adjacent* values are equal, deliberately. The `[VALUES]` body is
+    run-length encoded, so `d, d, k` means "d repeated k+2 times" -- a delta list with a repeated
+    neighbour decodes to something else entirely, which is easy to forget when hand-building a
+    fixture.
+    """
+    inf_path = tmp_path / "synthetic_INF.dsv"
+    rfd_path = tmp_path / "synthetic_RFD.dsv"
+    _write_inf(inf_path)
+    _write_rfd(rfd_path, deltas)
+
+    rust_rf = rust.read_inf_rf(str(inf_path), str(rfd_path))
+    cpp_rf = cpp.read_inf_rf(str(inf_path), str(rfd_path))
+    assert len(cpp_rf) == len(rust_rf) == 1, f"{case}: expected one RF event"
+    assert cpp_rf == rust_rf, f"{case}: RF events differ"
+
+    center = cpp_rf[0][0]
+    middle = cpp_rf[0][1] + cpp_rf[0][2] / 2
+    assert center == pytest.approx(expect_center_us * 1e-6, abs=1e-15), (
+        f"{case}: center {center * 1e6:.9f} us, expected {expect_center_us} us"
+    )
+    assert abs(center - middle) > 1e-9, f"{case}: the center was not moved off the window middle"

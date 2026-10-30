@@ -552,6 +552,99 @@ def read_dsv_pwl(path: str) -> tuple:
         The `VERTUNITNAME` string.
     """
 
+def read_inf_adc(path: str) -> tuple:
+    """
+    Read ADC sample times from a Siemens INF file.
+
+    Parameters
+    ----------
+    path : str
+        Path to a `*_INF.dsv` file.
+
+    Returns
+    -------
+    sample_times : ndarray of float64
+        All ADC sample times (s, Siemens frame), concatenated in segment order.
+    num_segments : int
+        Raw `adc MeasHeader` segment count, *before* the MaxAdcSegmentLength merge.
+    """
+
+def read_inf_adc_events(path: str) -> list[object]:
+    """
+    Read ADC sample times from a Siemens INF, grouped into logical events.
+
+    Siemens splits a long acquisition by `MaxAdcSegmentLength` (5000-sample chunks, say);
+    consecutive segments that are contiguous in time and share a dwell are merged back, so
+    the grouping matches the `.seq`'s per-event ADC. The merge is exact.
+
+    Parameters
+    ----------
+    path : str
+        Path to a `*_INF.dsv` file.
+
+    Returns
+    -------
+    list of ndarray
+        One float64 array of sample times (s) per logical ADC event.
+    """
+
+def read_inf_sync(path: str) -> list[tuple[str, float, float]]:
+    """
+    Read SYNC-column events from a Siemens INF file.
+
+    Parameters
+    ----------
+    path : str
+        Path to a `*_INF.dsv` file.
+
+    Returns
+    -------
+    list of tuple
+        `(name, time_s, duration_s)` per event, in block order. Filter by name in the
+        caller: external triggers are typically `EXTRIG0`.
+    """
+
+def read_inf_rf(inf_path: str, rfd_path: str) -> list[tuple[float, float, float, float, float, float]]:
+    """
+    Read RF events from a Siemens INF, with excitation centers refined from the RFD.
+
+    The center is the TXFlip window middle for symmetric pulses, which is exact. For an
+    asymmetric pulse (min-phase, SLR, adiabatic) the excitation is at the peak instead, so
+    the sub-raster RFD peak is used -- limited by the RFD raster, unlike the exact middle.
+
+    Parameters
+    ----------
+    inf_path : str
+        Path to a `*_INF.dsv` file.
+    rfd_path : str
+        Path to the matching `*_RFD.dsv` envelope channel.
+
+    Returns
+    -------
+    list of tuple
+        `(center_s, start_s, duration_s, flip_deg, freq_hz, phase_deg)` per RF event.
+    """
+
+def inf_lead_in(path: str) -> float:
+    """
+    The Pulseq-to-Siemens lead-in time (s).
+
+    The first INF event block (index 0) is the Siemens `GLOBzSet` setup; the second (index 1)
+    is the first Pulseq block, and *its* Siemens start time is the lead-in (~1020 us). Add it
+    to a Pulseq-frame time to get the Siemens-frame time, where the DSV waveforms live.
+    Never fit it.
+
+    Parameters
+    ----------
+    path : str
+        Path to a `*_INF.dsv` file.
+
+    Returns
+    -------
+    float
+        Lead-in time (s), or 0.0 if the INF has no second block.
+    """
+
 def parse_shapes(path: str) -> dict:
     """
     Dump the `[SHAPES]` library of a `.seq` file.

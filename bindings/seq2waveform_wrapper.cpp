@@ -25,6 +25,7 @@
 
 #include "seq2waveform/dsv.hpp"
 #include "seq2waveform/error.hpp"
+#include "seq2waveform/inf.hpp"
 #include "seq2waveform/model.hpp"
 #include "seq2waveform/parser.hpp"
 #include "seq2waveform/pwl.hpp"
@@ -950,6 +951,116 @@ NB_MODULE(_core, m) {
         "    Sample spacing (s).\n"
         "unit : str\n"
         "    The `VERTUNITNAME` string.");
+
+    m.def(
+        "read_inf_adc",
+        [](const std::string& path) {
+            const s2w::Inf inf = s2w::read_inf_file(path);
+            return nb::make_tuple(secs_array(inf.adc_sample_times()), inf.adc.size());
+        },
+        "path"_a,
+        "Read ADC sample times from a Siemens INF file.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a `*_INF.dsv` file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "sample_times : ndarray of float64\n"
+        "    All ADC sample times (s, Siemens frame), concatenated in segment order.\n"
+        "num_segments : int\n"
+        "    Raw `adc MeasHeader` segment count, *before* the MaxAdcSegmentLength merge.");
+
+    m.def(
+        "read_inf_adc_events",
+        [](const std::string& path) {
+            const s2w::Inf inf = s2w::read_inf_file(path);
+            std::vector<nb::object> out;
+            for (const s2w::AdcSegment& seg : inf.adc_events()) {
+                out.push_back(nb::cast(secs_array(seg.sample_times())));
+            }
+            return out;
+        },
+        "path"_a,
+        "Read ADC sample times from a Siemens INF, grouped into logical events.\n\n"
+        "Siemens splits a long acquisition by `MaxAdcSegmentLength` (5000-sample chunks, say);\n"
+        "consecutive segments that are contiguous in time and share a dwell are merged back, so\n"
+        "the grouping matches the `.seq`'s per-event ADC. The merge is exact.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a `*_INF.dsv` file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "list of ndarray\n"
+        "    One float64 array of sample times (s) per logical ADC event.");
+
+    m.def(
+        "read_inf_sync",
+        [](const std::string& path) {
+            const s2w::Inf inf = s2w::read_inf_file(path);
+            std::vector<std::tuple<std::string, double, double>> out;
+            for (const s2w::SyncEvent& e : inf.triggers()) {
+                out.emplace_back(e.name, e.time, e.duration);
+            }
+            return out;
+        },
+        "path"_a,
+        "Read SYNC-column events from a Siemens INF file.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a `*_INF.dsv` file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "list of tuple\n"
+        "    `(name, time_s, duration_s)` per event, in block order. Filter by name in the\n"
+        "    caller: external triggers are typically `EXTRIG0`.");
+
+    m.def(
+        "read_inf_rf",
+        [](const std::string& inf_path, const std::string& rfd_path) {
+            const s2w::Inf inf = s2w::read_inf_file(inf_path);
+            const s2w::DsvChannel rfd = s2w::read_dsv_file(rfd_path);
+            std::vector<std::tuple<double, double, double, double, double, double>> out;
+            for (const s2w::RfEvent& e : inf.rf_events()) {
+                out.emplace_back(e.center(rfd), e.start, e.duration, e.flip_deg, e.freq,
+                                 e.phase_deg);
+            }
+            return out;
+        },
+        "inf_path"_a, "rfd_path"_a,
+        "Read RF events from a Siemens INF, with excitation centers refined from the RFD.\n\n"
+        "The center is the TXFlip window middle for symmetric pulses, which is exact. For an\n"
+        "asymmetric pulse (min-phase, SLR, adiabatic) the excitation is at the peak instead, so\n"
+        "the sub-raster RFD peak is used -- limited by the RFD raster, unlike the exact middle.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "inf_path : str\n"
+        "    Path to a `*_INF.dsv` file.\n"
+        "rfd_path : str\n"
+        "    Path to the matching `*_RFD.dsv` envelope channel.\n\n"
+        "Returns\n"
+        "-------\n"
+        "list of tuple\n"
+        "    `(center_s, start_s, duration_s, flip_deg, freq_hz, phase_deg)` per RF event.");
+
+    m.def(
+        "inf_lead_in",
+        [](const std::string& path) { return s2w::read_inf_file(path).lead_in(); }, "path"_a,
+        "The Pulseq-to-Siemens lead-in time (s).\n\n"
+        "The first INF event block (index 0) is the Siemens `GLOBzSet` setup; the second (index 1)\n"
+        "is the first Pulseq block, and *its* Siemens start time is the lead-in (~1020 us). Add it\n"
+        "to a Pulseq-frame time to get the Siemens-frame time, where the DSV waveforms live.\n"
+        "Never fit it.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a `*_INF.dsv` file.\n\n"
+        "Returns\n"
+        "-------\n"
+        "float\n"
+        "    Lead-in time (s), or 0.0 if the INF has no second block.");
 
     m.def("parse_shapes", &parse_shapes, "path"_a,
           "Dump the `[SHAPES]` library of a `.seq` file.\n\n"
