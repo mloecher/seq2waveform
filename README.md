@@ -6,18 +6,18 @@ files into waveform arrays, with k-space sampling at arbitrary times.
 Built with nanobind + scikit-build-core, so the Python type stubs (docstrings and `NDArray`
 annotations included) are regenerated from the compiled module on every build.
 
-**Status: in progress.** Everything except `DsvSet` is ported: the time type, the piecewise-linear
-core, the Pulseq `.seq` reader, waveform expansion, the sampler/k-space, and the Siemens `.dsv` and
-INF readers — all verified bit-exact against the Rust implementation by 248 differential tests
-covering every event library, every shape, the parse-error messages, 24.8 M gradient corners across
-all three gradient modes, 27.9 M k-space points, every `.dsv` channel in the corpus, and the INF's
-ADC grouping, triggers, lead-in and RF centers. The port is also checked independently against
-Pulseq's own reference `.h5` at a 1e-4 bar (worst actual margin 4.3e-6), and parsing runs at parity
-with the Rust version.
+**Status: feature-complete; cut-over pending.** Every module is ported — the time type, the
+piecewise-linear core, the Pulseq `.seq` reader, waveform expansion, the sampler/k-space, the
+Siemens `.dsv` and INF readers, and `DsvSet` behind the same `WaveformSource` interface as
+`Sequence`, so a Siemens measurement set is a drop-in for a `.seq`.
 
-What remains is `DsvSet` — wiring the DSV and INF readers together behind the same
-`WaveformSource` interface as `Sequence`, so the sampling and k-space pipeline runs on a Siemens
-measurement set as well as a `.seq` — and then the cut-over.
+All of it is verified bit-exact against the Rust implementation by 284 differential tests, and
+independently against Pulseq's own reference `.h5` at a 1e-4 bar (worst actual margin 4.3e-6).
+Parsing runs at parity with the Rust version.
+
+What remains is the cut-over: renaming the package to `seq2waveform`, dropping the oracle and the
+parity suite, and moving the dataset tests and corpus over. See
+[PORTING.md](PORTING.md).
 
 ## Build and test
 

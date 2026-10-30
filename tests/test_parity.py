@@ -842,3 +842,160 @@ def test_asymmetric_rf_center_matches_rust(tmp_path, case, deltas, expect_center
         f"{case}: center {center * 1e6:.9f} us, expected {expect_center_us} us"
     )
     assert abs(center - middle) > 1e-9, f"{case}: the center was not moved off the window middle"
+
+
+# --- DsvSet as a second WaveformSource (port step 7) ----------------------------------------
+#
+# The point of the interface: the same sampling and k-space API runs on a Siemens measurement set
+# as on a .seq. So these tests mirror the Sequence ones, against a DsvSet built from each dataset's
+# dsv/ folder.
+#
+# Measured before writing them: constructing one costs 2.4 s in C++ and 6.4 s against the debug
+# oracle for `cones`, and its flat k-space another 1.4 s vs 21 s. Everything is therefore computed
+# once per dataset and cached, and `gradients_dense` uses a 1 ms raster -- `cones` spans ~635 s of
+# Siemens time, so a 0.1 ms raster would be 6.4 M points for no extra confidence.
+
+DSVSET_DENSE_RASTER = 1e-3
+
+
+def _dsv_paths(nm):
+    d = TESTDATA / nm / "dsv"
+    def one(suffix):
+        hits = sorted(d.glob("*_" + suffix + ".dsv"))
+        return str(hits[0]) if hits else None
+    return tuple(one(s) for s in ("GRX", "GRY", "GRZ", "RFD", "INF"))
+
+
+@functools.lru_cache(maxsize=None)
+def _dsvset_pair(nm):
+    """Every DsvSet-derived quantity for one dataset, from both readers. Built once each."""
+    paths = _dsv_paths(nm)
+    if any(p is None for p in paths):
+        return None
+
+    def harvest(mod):
+        s = mod.DsvSet(*paths)
+        return {
+            "gamma": s.gamma,
+            "duration": s.duration,
+            "gradient": {ax: s.gradient(ax) for ax in "xyz"},
+            "adc_events": s.adc_events(),
+            "adc_events_meta": s.adc_events_meta(),
+            "triggers": s.triggers(),
+            "adc_specs": s.adc_specs(),
+            "adc_excitations": s.adc_excitations(),
+            "flat": s.adc_kspace_flat(),
+            "dense": s.gradients_dense(DSVSET_DENSE_RASTER),
+        }
+
+    return {"rust": harvest(rust), "cpp": harvest(cpp)}
+
+
+@pytest.fixture
+def dsvset(name):
+    pair = _dsvset_pair(name)
+    if pair is None:
+        pytest.skip("dataset is missing one of the GRX/GRY/GRZ/RFD/INF channels")
+    return pair
+
+
+def test_dsvset_gamma_and_duration_match_rust(dsvset):
+    """The default gamma and the channel span.
+
+    gamma has to be identical, not merely close: it multiplies every gradient value, so a
+    difference here would show up as a uniform scale error in k-space and look like a units bug.
+    """
+    assert dsvset["cpp"]["gamma"] == dsvset["rust"]["gamma"], "gamma differs"
+    assert dsvset["cpp"]["gamma"] == cpp.SCAN_GAMMA, "the default gamma is not SCAN_GAMMA"
+    assert dsvset["cpp"]["duration"] == dsvset["rust"]["duration"], "duration differs"
+
+
+def test_dsvset_gradients_match_rust(dsvset):
+    """Each gradient channel, corner for corner, after the mT/m to Hz/m conversion."""
+    corners = 0
+    for ax in "xyz":
+        rt, rv = dsvset["rust"]["gradient"][ax]
+        ct, cv = dsvset["cpp"]["gradient"][ax]
+        assert len(ct) == len(rt), f"g{ax}: {len(ct)} corners vs Rust's {len(rt)}"
+        assert np.array_equal(ct, rt), f"g{ax}: corner times differ"
+        assert np.array_equal(cv, rv), f"g{ax}: corner values differ"
+        corners += len(ct)
+    assert corners > 0, "no gradient corners on any axis; nothing was compared"
+
+
+def test_dsvset_adc_events_match_rust(dsvset):
+    """The ADC grouping, after the MaxAdcSegmentLength merge, plus the deliberate zero offsets."""
+    rev, cev = dsvset["rust"]["adc_events"], dsvset["cpp"]["adc_events"]
+    assert len(cev) == len(rev), f"{len(cev)} ADC events vs Rust's {len(rev)}"
+    for i, (want, got) in enumerate(zip(rev, cev)):
+        assert np.array_equal(got, want), f"ADC event {i}: sample times differ"
+    rm, cm = dsvset["rust"]["adc_events_meta"], dsvset["cpp"]["adc_events_meta"]
+    for i, (want, got) in enumerate(zip(rm, cm)):
+        assert np.array_equal(got[0], want[0]), f"ADC event {i}: times differ"
+        assert (got[1], got[2]) == (want[1], want[2]), f"ADC event {i}: freq/phase differ"
+        assert got[1] == 0.0 and got[2] == 0.0, "the INF records no freq/phase; these must be 0"
+
+
+def test_dsvset_triggers_match_rust(dsvset):
+    """SYNC events as triggers, with the channel that the SYNC column does not carry."""
+    assert dsvset["cpp"]["triggers"] == dsvset["rust"]["triggers"], "triggers differ"
+    for ch, _t, _d in dsvset["cpp"]["triggers"]:
+        assert ch == 0, "the SYNC column has no channel; it must be reported as 0"
+
+
+def test_dsvset_excitation_matching_matches_rust(dsvset):
+    """Which excitation each ADC readout integrates from, and the specs built from it.
+
+    This is where the INF's RF centers meet the sampler. An off-by-one would still produce
+    plausible-looking k-space, so it is compared rather than eyeballed.
+    """
+    rs, cs = dsvset["rust"]["adc_specs"], dsvset["cpp"]["adc_specs"]
+    assert len(cs) == len(rs), "number of ADC specs differs"
+    for i, (want, got) in enumerate(zip(rs, cs)):
+        assert np.array_equal(got[0], want[0]), f"spec {i}: times differ"
+        assert got[1] == want[1], f"spec {i}: k-space reference differs"
+    # NaN-aware: an ADC with no preceding excitation reports (nan, nan, nan).
+    assert np.array_equal(
+        np.asarray(dsvset["cpp"]["adc_excitations"], dtype=float),
+        np.asarray(dsvset["rust"]["adc_excitations"], dtype=float),
+        equal_nan=True,
+    ), "matched excitations differ"
+
+
+def test_dsvset_kspace_matches_rust(dsvset):
+    """The whole-run flat k-space, which exercises the entire pipeline on a DSV source."""
+    rt, rkx, rky, rkz, roff = dsvset["rust"]["flat"]
+    ct, ckx, cky, ckz, coff = dsvset["cpp"]["flat"]
+    assert np.array_equal(coff, np.asarray(roff)), "event offsets differ"
+    assert np.array_equal(ct, np.asarray(rt)), "flat times differ"
+    for ax, want, got in (("x", rkx, ckx), ("y", rky, cky), ("z", rkz, ckz)):
+        assert np.array_equal(got, np.asarray(want)), f"flat k{ax} differs"
+    assert ct.size > 0, "no k-space points; nothing was compared"
+
+
+def test_dsvset_dense_gradients_match_rust(dsvset):
+    """Uniform-raster sampling over the whole Siemens-frame run, including the lead-in."""
+    rt, rx, ry, rz = dsvset["rust"]["dense"]
+    ct, cx, cy, cz = dsvset["cpp"]["dense"]
+    assert np.array_equal(ct, np.asarray(rt)), "dense times differ"
+    for ax, want, got in (("x", rx, cx), ("y", ry, cy), ("z", rz, cz)):
+        assert np.array_equal(got, np.asarray(want)), f"dense g{ax} differs"
+
+
+def test_dsvset_and_sequence_expose_the_same_interface():
+    """`Sequence` and `DsvSet` present the same WaveformSource API, on both sides.
+
+    This is the claim step 7 exists to make -- that a DSV+INF set is a drop-in for a `.seq` -- and
+    it is cheap to assert directly rather than trusting that the bindings stayed in step. The C++
+    side binds the shared surface from one template, so this mainly guards the Rust comparison.
+    """
+    shared = {
+        "gradient", "duration", "adc_events", "adc_events_meta", "triggers", "sampler",
+        "adc_specs", "adc_excitations", "trigger_specs", "adc_gradient_samples", "adc_kspace",
+        "adc_kspace_flat", "trigger_gradient_samples", "trigger_kspace", "trigger_kspace_flat",
+        "gradients_dense", "gradient_axis_dense",
+    }
+    for mod, label in ((cpp, "cpp"), (rust, "rust")):
+        for cls in (mod.Sequence, mod.DsvSet):
+            missing = shared - {n for n in dir(cls) if not n.startswith("_")}
+            assert not missing, f"{label}.{cls.__name__} is missing {sorted(missing)}"

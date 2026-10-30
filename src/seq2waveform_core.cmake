@@ -14,6 +14,7 @@ set(SEQ2WAVEFORM_CORE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/sample.cpp
     ${CMAKE_CURRENT_LIST_DIR}/dsv.cpp
     ${CMAKE_CURRENT_LIST_DIR}/inf.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/dsvset.cpp
 )
 
 add_library(seq2waveform_core STATIC ${SEQ2WAVEFORM_CORE_SOURCES})

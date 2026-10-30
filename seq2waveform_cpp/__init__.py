@@ -10,6 +10,8 @@ and both go away at cut-over.
 """
 
 from ._core import (
+    SCAN_GAMMA,
+    DsvSet,
     PiecewiseLinear,
     Sampler,
     Sequence,
@@ -26,6 +28,8 @@ from ._core import (
 )
 
 __all__ = [
+    "SCAN_GAMMA",
+    "DsvSet",
     "PiecewiseLinear",
     "Sampler",
     "Sequence",

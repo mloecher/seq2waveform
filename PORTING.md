@@ -41,6 +41,11 @@ Built and verified:
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
   `Shape::decompressed`, `Sequence::definition_f64`.
 - `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
+- `src/include/seq2waveform/dsvset.hpp`, `src/dsvset.cpp` — `DsvSet`: three gradient
+  channels, the RFD envelope and the INF, behind the same `WaveformSource` interface as
+  `Sequence`. Its own header rather than part of `dsv.hpp` because it needs `sample.hpp` and
+  `inf.hpp`, which the channel reader does not.
+- `src/include/seq2waveform/constants.hpp` — `kScanGamma`, which the Rust crate keeps at its root.
 - `src/include/seq2waveform/inf.hpp`, `src/inf.cpp` — the Siemens INF reader: the block/table
   parse, the `MaxAdcSegmentLength` merge, the lead-in, SYNC triggers and RF events with their
   RFD-refined centers. `merge_contiguous` and `split_cell` are also in `detail/inf_detail.hpp` for
@@ -68,7 +73,7 @@ Built and verified:
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  248 of them as of step 6. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
+  284 of them as of step 7. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
   shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
   ADC sample times, 4,601 RF events and 4,261 triggers; step 4 added 27.9 M flat k-space points.
   All exactly equal. A one-ULP perturbation of a single corner value does fail the suite, and
@@ -216,6 +221,21 @@ summary line, not just the exit code.
 **The two frames are the crux of this project.** The `.seq` and `.h5` share the Pulseq frame. The
 DSV lives in the Siemens frame, later by the INF-encoded lead-in. Everything that compares the two
 must shift by that lead-in, and must read it from the INF rather than fitting it.
+
+## The two sources agree physically
+
+Once `DsvSet` landed, the same k-space could be computed two independent ways — from the `.seq`
+through the Pulseq expansion, and from the Siemens DSV channels — and the peak magnitudes match:
+
+| dataset | max abs kz from `.seq` | max abs kz from `DsvSet` |
+|---|---|---|
+| cones | 399.6 1/m | 399.6 1/m |
+| girf | 503.4 1/m | 503.4 1/m |
+
+That is not a tested assertion (the two paths are different arithmetic on different files, so they
+agree to physics rather than to the bit), but it is a useful sanity check that the DSV frame, the
+~1020 µs lead-in and the mT/m → Hz/m conversion are all right at once. If a future change makes
+these diverge, something structural broke.
 
 ## What the corpus does and does not exercise
 
@@ -507,7 +527,11 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
 6. ~~`inf.cpp`~~ — done, against `inf_lead_in`, `read_inf_adc`, `read_inf_adc_events`,
    `read_inf_sync` and `read_inf_rf` on all five datasets, plus a synthetic pair for the
    asymmetric RF center (see below).
-7. **`DsvSet`** behind the same interface as `Sequence`, so it stays a drop-in source.
+7. ~~`DsvSet`~~ — done. The Python `Sequence` and `DsvSet` now bind their shared
+   `WaveformSource` surface from **one template** in the bindings, so the two cannot drift apart;
+   `test_dsvset_and_sequence_expose_the_same_interface` asserts it on both sides. The surfaces were
+   checked method for method against the Rust classes: 21, 18 and 3 names for `Sequence`, `DsvSet`
+   and `Sampler`, none missing, none extra.
 8. **Cut over.** Rename the Python package from `seq2waveform_cpp` to `seq2waveform`, drop `maturin`
    and the oracle task from `pyproject.toml`, move the dataset suite and the test corpus over from
    the Rust repo, port its `recipe.yaml` to build from the new wheel, add the cibuildwheel GitHub
@@ -551,9 +575,16 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 7 of the port order — DsvSet as a second WaveformSource, so the same
-sampling/k-space pipeline runs on a DSV+INF set as on a .seq
-(../seq2waveform/crates/seq2waveform/src/dsv.rs, the `impl WaveformSource for DsvSet` block).
+Scope for this session: step 8 of the port order — the cut-over. Rename the Python package from
+seq2waveform_cpp to seq2waveform, drop maturin, h5py and the oracle task from pyproject.toml, move
+the dataset suite and the test corpus over from the Rust repo, port its recipe.yaml to build from
+the new wheel, add the cibuildwheel GitHub Actions workflow (copy gropt's build-and-publish.yml),
+and archive the Rust repo.
+
+Before starting it, read the "Known gaps" list: parse_model/parse_shapes exist on both sides only
+for parity testing and must be deleted, and the parity suite itself goes away with the oracle --
+so test-h5 and the dataset suite become the only safety net. Make sure they cover what parity was
+covering before you remove it.
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say

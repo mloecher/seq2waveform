@@ -139,6 +139,8 @@ def ps_from_secs(seconds: Annotated[NDArray[numpy.float64], dict(shape=(None,), 
 def ps_to_secs(picoseconds: Annotated[NDArray[numpy.int64], dict(shape=(None,), order='C', writable=False)]) -> Annotated[NDArray[numpy.float64], dict(shape=(None,))]:
     """Convert exact int64 picoseconds back to float64 seconds."""
 
+SCAN_GAMMA: float = 42575575.0
+
 def parse_file(path: str) -> int:
     """
     Parse a `.seq` file and return the number of blocks.
@@ -224,6 +226,30 @@ class Sequence:
     @gradient_mode.setter
     def gradient_mode(self, arg: str, /) -> None: ...
 
+    def adc_times(self) -> Annotated[NDArray[numpy.float64], dict(shape=(None,))]:
+        """
+        All ADC sample times (s), flattened across every ADC event.
+
+        Returns
+        -------
+        ndarray of float64
+            Sample times (s), at dwell centers: `delay + dwell * (k + 0.5)`.
+        """
+
+    def rf_events(self) -> list[tuple[float, float, float, str]]:
+        """
+        RF pulses as `(center_s, freq_hz, phase_rad, use_name)`.
+
+        `use_name` is the real RF use; undefined pulses are NOT relabelled as excitation,
+        which is a deliberate divergence from Pulseq (its h5 routes both into
+        `/excitation`, so an h5 comparison has to union the two).
+
+        Returns
+        -------
+        list of tuple
+            One entry per RF event, in block order.
+        """
+
     def gradient(self, axis: str) -> tuple:
         """
         Expand one gradient channel to piecewise-linear corners.
@@ -241,24 +267,23 @@ class Sequence:
             Corner amplitudes (Hz/m).
         """
 
-    def adc_times(self) -> Annotated[NDArray[numpy.float64], dict(shape=(None,))]:
+    @property
+    def duration(self) -> float:
         """
-        All ADC sample times (s), flattened across every ADC event.
-
-        Returns
-        -------
-        ndarray of float64
-            Sample times (s), at dwell centers: `delay + dwell * (k + 0.5)`.
+        Total duration (s). For a `Sequence` the summed block durations; for a `DsvSet` the
+        DSV channel span, which is the Siemens frame and includes the lead-in.
         """
 
     def adc_events(self) -> list[object]:
         """
-        ADC sample times split per event, as the `.seq` records them.
+        ADC sample times split per event.
 
         Returns
         -------
         list of ndarray
-            One float64 array of sample times (s) per ADC event.
+            One float64 array of sample times (s) per ADC event. For a `DsvSet` the Siemens
+            `MaxAdcSegmentLength` chunks are merged back first, so the grouping matches a
+            `.seq`'s.
         """
 
     def adc_events_meta(self) -> list[object]:
@@ -268,21 +293,8 @@ class Sequence:
         Returns
         -------
         list of tuple
-            `(times_s, freq_hz, phase_rad)` per ADC event.
-        """
-
-    def rf_events(self) -> list[tuple[float, float, float, str]]:
-        """
-        RF pulses as `(center_s, freq_hz, phase_rad, use_name)`.
-
-        `use_name` is the real RF use; undefined pulses are NOT relabelled as excitation,
-        which is a deliberate divergence from Pulseq (its h5 routes both into
-        `/excitation`, so an h5 comparison has to union the two).
-
-        Returns
-        -------
-        list of tuple
-            One entry per RF event, in block order.
+            `(times_s, freq_hz, phase_rad)` per ADC event. Both are 0 for a `DsvSet`: the INF
+            does not record them.
         """
 
     def triggers(self) -> list[tuple[int, float, float]]:
@@ -292,16 +304,13 @@ class Sequence:
         Returns
         -------
         list of tuple
-            One entry per resolved `extension TRIGGERS` event, in block order.
+            One entry per event, in order. `channel` is 0 for a `DsvSet`: the SYNC column
+            carries no channel.
         """
-
-    @property
-    def duration(self) -> float:
-        """Total sequence duration (s): the sum of the block durations."""
 
     def sampler(self) -> Sampler:
         """
-        Build a `Sampler` over this sequence's three gradient channels.
+        Build a `Sampler` over this source's three gradient channels.
 
         Precomputes the channels and their cumulative moments, so repeated sampling (a delay
         sweep, say) does not re-expand the waveforms.
@@ -371,8 +380,8 @@ class Sequence:
         """
         k-space (1/m) at every ADC sample, one trace per event.
 
-        Each event integrates from its own preceding excitation. Gamma is already baked
-        into the Hz/m gradients, so this is the integral of G dt directly.
+        Each event integrates from its own preceding excitation. Gamma is already baked into
+        the Hz/m gradients, so this is the integral of G dt directly.
 
         Returns
         -------
@@ -382,7 +391,227 @@ class Sequence:
 
     def adc_kspace_flat(self) -> object:
         """
-        Whole-sequence ADC k-space as flat arrays -- the fast path for large sequences.
+        Whole-run ADC k-space as flat arrays -- the fast path for large sequences.
+
+        Returns
+        -------
+        tuple
+            `(t, kx, ky, kz, offsets)`. `offsets` are cumulative event boundaries, so
+            `offsets[0] == 0`, `offsets[-1] == len(t)`, and event `e` is
+            `offsets[e]:offsets[e+1]`. Recover the per-event split with
+            `np.split(kx, offsets[1:-1])`.
+        """
+
+    def trigger_gradient_samples(self, delay: float, dt: float, n: int) -> list[object]:
+        """Gradient values at trigger-based sample points, one trace per trigger."""
+
+    def trigger_kspace(self, delay: float, dt: float, n: int) -> list[object]:
+        """k-space at trigger-based sample points, integrated from each trigger."""
+
+    def trigger_kspace_flat(self, delay: float, dt: float, n: int) -> object:
+        """Trigger-based k-space as flat arrays. See `adc_kspace_flat`."""
+
+    def gradients_dense(self, raster: float) -> object:
+        """
+        All three gradient axes on a uniform raster over `[0, duration]`.
+
+        Parameters
+        ----------
+        raster : float
+            Sample spacing (s).
+
+        Returns
+        -------
+        tuple
+            `(t, gx, gy, gz)`. The last sample is at or past `duration`.
+        """
+
+    def gradient_axis_dense(self, axis: str, raster: float) -> tuple:
+        """
+        One gradient axis on a uniform raster over `[0, duration]`.
+
+        Returns
+        -------
+        tuple
+            `(t, values_hz_per_m)`.
+        """
+
+class DsvSet:
+    """
+    A Siemens DSP-Simulator measurement set: three gradient channels, the RFD envelope
+    and the INF.
+
+    The DSV-side analogue of a `Sequence`, in the Siemens frame, and the same
+    `WaveformSource` -- so the sampling and k-space API below is identical, and a DSV+INF
+    set can stand in for a `.seq`. Use it to predict trajectories for sequences that have
+    no `.seq` at all. Gradients, ADC and excitation all share the ~1020 us lead-in, so
+    k-space (an integral *difference*) comes out right with no lead-in juggling.
+
+    Parameters
+    ----------
+    grx, gry, grz : str
+        The three gradient channel files, e.g. `SimulationProtocol_GRX.dsv`.
+    rfd : str
+        The RF envelope channel, used to refine excitation centers.
+    inf : str
+        The INF file: ADC events, triggers and RF events.
+    gamma : float, optional
+        Gyromagnetic ratio (Hz/T) converting the DSV gradients (mT/m) to the Hz/m used
+        internally. Defaults to `SCAN_GAMMA`, the Siemens interpreter's value.
+    """
+
+    def __init__(self, grx: str, gry: str, grz: str, rfd: str, inf: str, gamma: float = 42575575.0) -> None: ...
+
+    @property
+    def gamma(self) -> float:
+        """
+        The gyromagnetic ratio (Hz/T) this set uses to convert mT/m to the internal Hz/m.
+
+        Divide any Hz/m output by `gamma * 1e-3` to get mT/m, or by `gamma` for T/m.
+        """
+
+    def gradient(self, axis: str) -> tuple:
+        """
+        Expand one gradient channel to piecewise-linear corners.
+
+        Parameters
+        ----------
+        axis : {'x', 'y', 'z'}
+            Which gradient channel.
+
+        Returns
+        -------
+        corner_times : ndarray of float64
+            Corner times (s), strictly increasing.
+        corner_values : ndarray of float64
+            Corner amplitudes (Hz/m).
+        """
+
+    @property
+    def duration(self) -> float:
+        """
+        Total duration (s). For a `Sequence` the summed block durations; for a `DsvSet` the
+        DSV channel span, which is the Siemens frame and includes the lead-in.
+        """
+
+    def adc_events(self) -> list[object]:
+        """
+        ADC sample times split per event.
+
+        Returns
+        -------
+        list of ndarray
+            One float64 array of sample times (s) per ADC event. For a `DsvSet` the Siemens
+            `MaxAdcSegmentLength` chunks are merged back first, so the grouping matches a
+            `.seq`'s.
+        """
+
+    def adc_events_meta(self) -> list[object]:
+        """
+        ADC events with their per-event frequency and phase offsets.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, freq_hz, phase_rad)` per ADC event. Both are 0 for a `DsvSet`: the INF
+            does not record them.
+        """
+
+    def triggers(self) -> list[tuple[int, float, float]]:
+        """
+        Trigger events as `(channel, time_s, duration_s)`.
+
+        Returns
+        -------
+        list of tuple
+            One entry per event, in order. `channel` is 0 for a `DsvSet`: the SYNC column
+            carries no channel.
+        """
+
+    def sampler(self) -> Sampler:
+        """
+        Build a `Sampler` over this source's three gradient channels.
+
+        Precomputes the channels and their cumulative moments, so repeated sampling (a delay
+        sweep, say) does not re-expand the waveforms.
+
+        Returns
+        -------
+        Sampler
+        """
+
+    def adc_specs(self) -> list[object]:
+        """
+        Where to sample for each ADC event, and what to integrate k-space from.
+
+        The reference is the most recent excitation *before* the event. A warning goes to
+        stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is
+        how a mismatched sequence announces itself, so do not silence it.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, reference_s)` per ADC event.
+        """
+
+    def adc_excitations(self) -> list[tuple[float, float, float]]:
+        """
+        The excitation matched to each ADC event, aligned 1:1 with `adc_specs`.
+
+        Returns
+        -------
+        list of tuple
+            `(center_s, freq_hz, phase_rad)` per ADC event, or `(nan, nan, nan)` when no
+            excitation precedes it. Use `freq` and the gradient at `center` to get the slice
+            offset of each readout.
+        """
+
+    def trigger_specs(self, delay: float, dt: float, n: int) -> list[object]:
+        """
+        Sample specs for trigger-based (Skope) measurements.
+
+        Parameters
+        ----------
+        delay : float
+            Offset (s) from each trigger to the first sample.
+        dt : float
+            Sample spacing (s).
+        n : int
+            Samples per trigger.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, reference_s)` per trigger. The reference is the trigger itself, not
+            an excitation -- that is the external measurement's own reference.
+        """
+
+    def adc_gradient_samples(self) -> list[object]:
+        """
+        Gradient values (Hz/m) at every ADC sample, one trace per event.
+
+        Returns
+        -------
+        list of tuple
+            `(t, gx, gy, gz)` per ADC event.
+        """
+
+    def adc_kspace(self) -> list[object]:
+        """
+        k-space (1/m) at every ADC sample, one trace per event.
+
+        Each event integrates from its own preceding excitation. Gamma is already baked into
+        the Hz/m gradients, so this is the integral of G dt directly.
+
+        Returns
+        -------
+        list of tuple
+            `(t, kx, ky, kz)` per ADC event.
+        """
+
+    def adc_kspace_flat(self) -> object:
+        """
+        Whole-run ADC k-space as flat arrays -- the fast path for large sequences.
 
         Returns
         -------
