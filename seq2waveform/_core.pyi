@@ -642,6 +642,9 @@ class Sampler:
     Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,
     for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape
     preserved.
+
+    Both methods return `(t, x, y, z)`, matching every other trace-returning method in this
+    module. Index `[1:]` for the three axes and `[1 + axis]` for one of them.
     """
 
     @overload
@@ -659,7 +662,9 @@ class Sampler:
         Returns
         -------
         tuple of ndarray
-            `(gx, gy, gz)`, each shaped like `times`.
+            `(t, gx, gy, gz)`, each shaped like `times`. `t` is the query grid in seconds,
+            after the picosecond quantisation every time in this library goes through, so it
+            is what was actually sampled rather than what was asked for.
         """
 
     @overload
@@ -682,7 +687,8 @@ class Sampler:
         Returns
         -------
         tuple of ndarray
-            `(kx, ky, kz)`, each shaped like `times`.
+            `(t, kx, ky, kz)`, each shaped like `times`. `t` is the query grid in seconds,
+            after picosecond quantisation.
         """
 
     @overload

@@ -82,14 +82,16 @@ std::vector<double> to_vector(In<double> a) {
 /// Seconds are lossless here: the raw int64 is multiplied by 1e-12, and sequence times stay below
 /// 1e15 ps, well inside the 2^53 where that map is injective. Callers who need the exact grid back
 /// -- a delay sweep, say -- can recover it with `ps_from_secs`, which `test_invariants.py` pins.
-Out<double> secs_array(const std::vector<s2w::Ps>& t) {
+std::vector<double> secs_vec(const std::vector<s2w::Ps>& t) {
     std::vector<double> out;
     out.reserve(t.size());
     for (const s2w::Ps x : t) {
         out.push_back(x.secs());
     }
-    return to_numpy(std::move(out));
+    return out;
 }
+
+Out<double> secs_array(const std::vector<s2w::Ps>& t) { return to_numpy(secs_vec(t)); }
 
 s2w::GradMode grad_mode_from_str(const std::string& mode) {
     if (mode == "pulseq") {
@@ -749,13 +751,16 @@ NB_MODULE(_core, m) {
         "sampling. Build one with `Sequence.sampler()`.\n\n"
         "Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,\n"
         "for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape\n"
-        "preserved.")
+        "preserved.\n\n"
+        "Both methods return `(t, x, y, z)`, matching every other trace-returning method in this\n"
+        "module. Index `[1:]` for the three axes and `[1 + axis]` for one of them.")
         .def(
             "gradients",
             [](const s2w::Sampler& s, InAny<double> times) {
                 auto ts = flatten_times<double>(times, ps_of_secs);
                 s2w::Trace tr = s.gradients(ts.first);
-                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                return nb::make_tuple(reshape_like(secs_vec(tr.t), ts.second),
+                                      reshape_like(std::move(tr.x), ts.second),
                                       reshape_like(std::move(tr.y), ts.second),
                                       reshape_like(std::move(tr.z), ts.second));
             },
@@ -770,13 +775,16 @@ NB_MODULE(_core, m) {
             "Returns\n"
             "-------\n"
             "tuple of ndarray\n"
-            "    `(gx, gy, gz)`, each shaped like `times`.")
+            "    `(t, gx, gy, gz)`, each shaped like `times`. `t` is the query grid in seconds,\n"
+            "    after the picosecond quantisation every time in this library goes through, so it\n"
+            "    is what was actually sampled rather than what was asked for.")
         .def(
             "gradients",
             [](const s2w::Sampler& s, InAny<std::int64_t> times) {
                 auto ts = flatten_times<std::int64_t>(times, ps_of_raw);
                 s2w::Trace tr = s.gradients(ts.first);
-                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                return nb::make_tuple(reshape_like(secs_vec(tr.t), ts.second),
+                                      reshape_like(std::move(tr.x), ts.second),
                                       reshape_like(std::move(tr.y), ts.second),
                                       reshape_like(std::move(tr.z), ts.second));
             },
@@ -786,7 +794,8 @@ NB_MODULE(_core, m) {
             [](const s2w::Sampler& s, InAny<double> times, double reference) {
                 auto ts = flatten_times<double>(times, ps_of_secs);
                 s2w::Trace tr = s.kspace(ts.first, s2w::Ps::from_secs(reference));
-                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                return nb::make_tuple(reshape_like(secs_vec(tr.t), ts.second),
+                                      reshape_like(std::move(tr.x), ts.second),
                                       reshape_like(std::move(tr.y), ts.second),
                                       reshape_like(std::move(tr.z), ts.second));
             },
@@ -802,13 +811,15 @@ NB_MODULE(_core, m) {
             "Returns\n"
             "-------\n"
             "tuple of ndarray\n"
-            "    `(kx, ky, kz)`, each shaped like `times`.")
+            "    `(t, kx, ky, kz)`, each shaped like `times`. `t` is the query grid in seconds,\n"
+            "    after picosecond quantisation.")
         .def(
             "kspace",
             [](const s2w::Sampler& s, InAny<std::int64_t> times, std::int64_t reference) {
                 auto ts = flatten_times<std::int64_t>(times, ps_of_raw);
                 s2w::Trace tr = s.kspace(ts.first, s2w::Ps(reference));
-                return nb::make_tuple(reshape_like(std::move(tr.x), ts.second),
+                return nb::make_tuple(reshape_like(secs_vec(tr.t), ts.second),
+                                      reshape_like(std::move(tr.x), ts.second),
                                       reshape_like(std::move(tr.y), ts.second),
                                       reshape_like(std::move(tr.z), ts.second));
             },

@@ -173,8 +173,8 @@ def test_nd_time_arrays_keep_their_shape(name):
         pytest.skip("not enough ADC samples for a 2-D query")
     grid = flat.reshape(8, 16)
     s = c.sampler()
-    gx_flat = s.gradients(flat)[0]
-    gx_grid = s.gradients(grid)[0]
+    gx_flat = s.gradients(flat)[1]
+    gx_grid = s.gradients(grid)[1]
     assert gx_grid.shape == (8, 16), f"expected (8, 16), got {gx_grid.shape}"
     assert np.array_equal(gx_grid.ravel(), gx_flat), "N-D and flat results differ"
 
