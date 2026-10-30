@@ -44,6 +44,10 @@ public:
     /// the `.seq`'s per-event ADC. freq and phase are 0: the INF does not record them.
     std::vector<AdcEvent> adc_events() const override;
 
+    /// The first sample time of each merged ADC event. The merge already carries each segment's
+    /// start and dwell, so this needs no sample times at all.
+    std::vector<Ps> adc_event_starts() const override;
+
     /// Excitations as `(center, freq_hz, phase_rad)`, sorted by center.
     ///
     /// The INF has no excite/refocus type, so every RF event is treated as an excitation. The

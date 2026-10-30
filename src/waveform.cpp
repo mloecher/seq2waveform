@@ -32,6 +32,19 @@ void walk(const Sequence& seq, F&& fn) {
     }
 }
 
+/// How many blocks carry a non-zero id for `pick`. A cheap pre-pass so an event list can be
+/// reserved once; an upper bound, since a block whose id is missing from the library emits nothing.
+template <typename F>
+std::size_t count_events(const Sequence& seq, F&& pick) {
+    std::size_t n = 0;
+    for (const Block& b : seq.blocks) {
+        if (pick(b) != 0) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 /// The decompressed samples of shape `id`, or empty when absent -- Rust's
 /// `shapes.get(&id).map(decompressed).unwrap_or_default()`.
 std::vector<double> shape_or_empty(const Sequence& seq, std::uint32_t id) {
@@ -389,15 +402,15 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
         return true;
     }
     if (is_centers) {
-        const std::pair<std::vector<double>, std::vector<double>> rec =
+        std::pair<std::vector<double>, std::vector<double>> rec =
             restore_additional_shape_samples(tt, waveform, a.first, a.last, grad_raster);
         out.t.clear();
         out.t.reserve(rec.first.size());
         for (const double x : rec.first) {
             out.t.push_back(off + Ps::from_secs(x));
         }
-        out.v = rec.second;
-        return true;
+        out.v = std::move(rec.second);  // `rec` is a local, dead after this: copying it duplicated
+        return true;                    // every reconstructed corner, once per block per axis
     }
     if (std::fabs(tt[0] / grad_raster - 0.5) < 1e-6) {
         // Oversampled or rasterized: pad with first/last at the edges.
@@ -626,6 +639,7 @@ std::vector<Ps> adc_times(const Sequence& seq) {
 
 std::vector<AdcEvent> adc_events(const Sequence& seq) {
     std::vector<AdcEvent> out;
+    out.reserve(count_events(seq, [](const Block& b) { return b.adc; }));
     walk(seq, [&](Ps start, const Block& block) {
         if (block.adc == 0) {
             return;
@@ -638,8 +652,29 @@ std::vector<AdcEvent> adc_events(const Sequence& seq) {
     return out;
 }
 
+std::vector<Ps> adc_event_starts(const Sequence& seq) {
+    std::vector<Ps> out;
+    out.reserve(count_events(seq, [](const Block& b) { return b.adc; }));
+    walk(seq, [&](Ps start, const Block& block) {
+        if (block.adc == 0) {
+            return;
+        }
+        const auto it = seq.adc.find(block.adc);
+        if (it == seq.adc.end()) {
+            return;
+        }
+        const Adc& adc = it->second;
+        // `build_adc`'s k == 0 term, and `Ps::zero()` for an empty event -- the same value
+        // `adc_events()` would yield, so the excitation matching cannot drift from the full path.
+        out.push_back(adc.num == 0 ? Ps::zero()
+                                   : start + Ps::from_secs(adc.delay + adc.dwell * 0.5));
+    });
+    return out;
+}
+
 std::vector<RfMeta> rf_events_meta(const Sequence& seq) {
     std::vector<RfMeta> out;
+    out.reserve(count_events(seq, [](const Block& b) { return b.rf; }));
     walk(seq, [&](Ps start, const Block& block) {
         if (block.rf == 0) {
             return;

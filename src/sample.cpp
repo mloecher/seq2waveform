@@ -118,9 +118,21 @@ Sampler WaveformSource::sampler() const {
 }
 
 std::vector<Ps> WaveformSource::excitation_centers() const {
+    const std::vector<std::tuple<Ps, double, double>> exc = excitations();
     std::vector<Ps> out;
-    for (const auto& e : excitations()) {
+    out.reserve(exc.size());
+    for (const auto& e : exc) {
         out.push_back(std::get<0>(e));
+    }
+    return out;
+}
+
+std::vector<Ps> WaveformSource::adc_event_starts() const {
+    const std::vector<AdcEvent> events = adc_events();
+    std::vector<Ps> out;
+    out.reserve(events.size());
+    for (const AdcEvent& e : events) {
+        out.push_back(e.t.empty() ? Ps::zero() : e.t.front());
     }
     return out;
 }
@@ -133,10 +145,13 @@ std::vector<std::tuple<double, double, double>> WaveformSource::adc_excitations(
         centers.push_back(std::get<0>(e));
     }
 
+    // Only the event *starts*: this used to call `adc_events()` and read the first time of each,
+    // building every sample time in the run to use 4,216 of them.
+    const std::vector<Ps> starts = adc_event_starts();
     std::vector<std::tuple<double, double, double>> out;
+    out.reserve(starts.size());
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    for (const AdcEvent& ev : adc_events()) {
-        const Ps t = ev.t.empty() ? Ps::zero() : ev.t.front();
+    for (const Ps t : starts) {
         const std::size_t i = static_cast<std::size_t>(
             std::upper_bound(centers.begin(), centers.end(), t) - centers.begin());
         if (i == 0) {
@@ -172,8 +187,10 @@ std::vector<SampleSpec> WaveformSource::adc_specs() const {
 
 std::vector<SampleSpec> WaveformSource::trigger_specs(double delay, double dt,
                                                       std::size_t n) const {
+    const std::vector<TriggerEvent> trgs = trigger_events();
     std::vector<SampleSpec> out;
-    for (const TriggerEvent& trg : trigger_events()) {
+    out.reserve(trgs.size());
+    for (const TriggerEvent& trg : trgs) {
         SampleSpec sp;
         sp.times.reserve(n);
         for (std::size_t k = 0; k < n; ++k) {
@@ -187,8 +204,10 @@ std::vector<SampleSpec> WaveformSource::trigger_specs(double delay, double dt,
 
 std::vector<Trace> WaveformSource::adc_gradient_samples() const {
     const Sampler s = sampler();
+    const std::vector<SampleSpec> specs = adc_specs();
     std::vector<Trace> out;
-    for (const SampleSpec& sp : adc_specs()) {
+    out.reserve(specs.size());
+    for (const SampleSpec& sp : specs) {
         out.push_back(s.gradients(sp.times));
     }
     return out;
@@ -196,8 +215,10 @@ std::vector<Trace> WaveformSource::adc_gradient_samples() const {
 
 std::vector<Trace> WaveformSource::adc_kspace() const {
     const Sampler s = sampler();
+    const std::vector<SampleSpec> specs = adc_specs();
     std::vector<Trace> out;
-    for (const SampleSpec& sp : adc_specs()) {
+    out.reserve(specs.size());
+    for (const SampleSpec& sp : specs) {
         out.push_back(s.kspace(sp.times, sp.reference));
     }
     return out;
@@ -206,8 +227,10 @@ std::vector<Trace> WaveformSource::adc_kspace() const {
 std::vector<Trace> WaveformSource::trigger_gradient_samples(double delay, double dt,
                                                             std::size_t n) const {
     const Sampler s = sampler();
+    const std::vector<SampleSpec> specs = trigger_specs(delay, dt, n);
     std::vector<Trace> out;
-    for (const SampleSpec& sp : trigger_specs(delay, dt, n)) {
+    out.reserve(specs.size());
+    for (const SampleSpec& sp : specs) {
         out.push_back(s.gradients(sp.times));
     }
     return out;
@@ -215,8 +238,10 @@ std::vector<Trace> WaveformSource::trigger_gradient_samples(double delay, double
 
 std::vector<Trace> WaveformSource::trigger_kspace(double delay, double dt, std::size_t n) const {
     const Sampler s = sampler();
+    const std::vector<SampleSpec> specs = trigger_specs(delay, dt, n);
     std::vector<Trace> out;
-    for (const SampleSpec& sp : trigger_specs(delay, dt, n)) {
+    out.reserve(specs.size());
+    for (const SampleSpec& sp : specs) {
         out.push_back(s.kspace(sp.times, sp.reference));
     }
     return out;
@@ -270,6 +295,8 @@ PiecewiseLinear SequenceSource::gradient(char axis) const {
 }
 
 std::vector<AdcEvent> SequenceSource::adc_events() const { return s2w::adc_events(seq_); }
+
+std::vector<Ps> SequenceSource::adc_event_starts() const { return s2w::adc_event_starts(seq_); }
 
 std::vector<TriggerEvent> SequenceSource::trigger_events() const {
     return s2w::trigger_events(seq_);

@@ -67,8 +67,10 @@ PiecewiseLinear DsvSet::gradient(char axis) const {
 }
 
 std::vector<AdcEvent> DsvSet::adc_events() const {
+    const std::vector<AdcSegment> segs = inf_.adc_events();
     std::vector<AdcEvent> out;
-    for (const AdcSegment& seg : inf_.adc_events()) {
+    out.reserve(segs.size());
+    for (const AdcSegment& seg : segs) {
         AdcEvent e;
         e.t = seg.sample_times();
         e.freq = 0.0;  // the INF carries no per-sample freq/phase
@@ -78,13 +80,29 @@ std::vector<AdcEvent> DsvSet::adc_events() const {
     return out;
 }
 
+std::vector<Ps> DsvSet::adc_event_starts() const {
+    const std::vector<AdcSegment> segs = inf_.adc_events();
+    std::vector<Ps> out;
+    out.reserve(segs.size());
+    for (const AdcSegment& seg : segs) {
+        // `AdcSegment::sample_times()`'s k == 0 term, and `Ps::zero()` for an empty segment, so
+        // this agrees with `adc_events()` exactly.
+        out.push_back(seg.num_samples == 0
+                          ? Ps::zero()
+                          : Ps::from_secs(seg.start + seg.dwell() * 0.5));
+    }
+    return out;
+}
+
 std::vector<std::tuple<Ps, double, double>> DsvSet::excitations() const {
     const double dt = rfd_.raster_time;
     std::size_t n_off = 0;
     double max_off = 0.0;
 
+    const std::vector<RfEvent> events = inf_.rf_events();
     std::vector<std::tuple<Ps, double, double>> out;
-    for (const RfEvent& e : inf_.rf_events()) {
+    out.reserve(events.size());
+    for (const RfEvent& e : events) {
         const std::pair<double, double> co = e.center_and_offset(rfd_);
         if (std::fabs(co.second) > dt) {
             ++n_off;
@@ -110,8 +128,10 @@ std::vector<std::tuple<Ps, double, double>> DsvSet::excitations() const {
 }
 
 std::vector<TriggerEvent> DsvSet::trigger_events() const {
+    const std::vector<SyncEvent> syncs = inf_.triggers();
     std::vector<TriggerEvent> out;
-    for (const SyncEvent& e : inf_.triggers()) {
+    out.reserve(syncs.size());
+    for (const SyncEvent& e : syncs) {
         TriggerEvent t;
         t.channel = 0;  // the SYNC column has no channel
         t.time = Ps::from_secs(e.time);

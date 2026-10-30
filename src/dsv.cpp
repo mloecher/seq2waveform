@@ -1,5 +1,6 @@
 #include "seq2waveform/dsv.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -128,23 +129,43 @@ std::string debug_quote(std::string_view s) {
 }  // namespace
 
 std::vector<double> DsvChannel::dense() const {
-    std::vector<double> out;
-    out.reserve(num_samples);
-    for (std::size_t k = 0; k < num_samples; ++k) {
-        out.push_back(waveform.value_at(Ps::from_secs((static_cast<double>(k) + 0.5) * raster_time)));
+    // One forward sweep over the corners, in fixed-size chunks of query times, rather than a
+    // `value_at` binary search per sample. The sample times are strictly increasing, so the sweep
+    // is the right shape; on `cones` GRX that is 63.5 M samples over 2.6 M corners, where the
+    // searches cost ~21 comparisons each. Chunking keeps the times buffer at 64 KiB instead of
+    // materialising 508 MB of them.
+    constexpr std::size_t kChunk = 8192;
+    std::vector<double> out(num_samples, 0.0);
+    std::vector<Ps> times(kChunk);
+    for (std::size_t base = 0; base < num_samples; base += kChunk) {
+        const std::size_t len = std::min(kChunk, num_samples - base);
+        for (std::size_t i = 0; i < len; ++i) {
+            times[i] = Ps::from_secs((static_cast<double>(base + i) + 0.5) * raster_time);
+        }
+        waveform.sample_at_sorted_into(times.data(), len, out.data() + base);
     }
     return out;
 }
 
-DsvChannel read_dsv_channel(std::istream& in) {
+DsvChannel read_dsv_text(std::string_view text) {
     std::map<std::string, std::string> definitions;
     std::vector<std::int64_t> rle;
     Section section = Section::None;
 
-    std::string raw;
+    // One int64 per value line at most, so the newline count is a tight upper bound. Without it
+    // the delta stream regrows a dozen times on a 23 MB channel; with it, one allocation.
+    rle.reserve(static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n')));
+
+    // Split on '\n' in place rather than with std::getline, which allocates and copies a
+    // std::string per line -- a DSV channel is one integer per line and millions of lines long, so
+    // that was most of the read. Same segmentation as parse_text; see PORTING.md.
+    std::size_t pos = 0;
     bool done = false;  // the `;` terminator in [VALUES] ends the read, as Rust's `break` does
-    while (!done && std::getline(in, raw)) {
-        const std::string_view t = trim(raw);  // also drops a CRLF '\r'
+    while (!done && pos < text.size()) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::size_t stop = nl == std::string_view::npos ? text.size() : nl;
+        const std::string_view t = trim(text.substr(pos, stop - pos));  // also drops a CRLF '\r'
+        pos = nl == std::string_view::npos ? text.size() : nl + 1;
         if (t.empty()) {
             continue;
         }
@@ -198,6 +219,17 @@ DsvChannel read_dsv_channel(std::istream& in) {
     ch.num_samples = decoded.second;
     ch.definitions = std::move(definitions);
     return ch;
+}
+
+DsvChannel read_dsv_channel(std::istream& in) {
+    // Read the whole stream in 64 KiB blocks, then decode in place -- the same trade the `.seq`
+    // and INF readers make: holding one channel costs far less than a per-line allocation.
+    std::string text;
+    char buf[1 << 16];
+    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
+        text.append(buf, static_cast<std::size_t>(in.gcount()));
+    }
+    return read_dsv_text(text);
 }
 
 DsvChannel read_dsv_file(const std::string& path) {

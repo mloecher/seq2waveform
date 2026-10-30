@@ -84,6 +84,11 @@ std::vector<Ps> adc_times(const Sequence& seq);
 /// ADC events split as in the `.seq`: one entry per ADC event rather than one flat time vector.
 std::vector<AdcEvent> adc_events(const Sequence& seq);
 
+/// The first sample time of each ADC event, without building the samples. Matches
+/// `adc_events()[i].t.front()` exactly (and `Ps::zero()` for an empty event) at a fraction of the
+/// cost -- one number per event rather than one per sample.
+std::vector<Ps> adc_event_starts(const Sequence& seq);
+
 /// RF event metadata only -- skips the complex waveform.
 std::vector<RfMeta> rf_events_meta(const Sequence& seq);
 

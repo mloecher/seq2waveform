@@ -71,13 +71,17 @@ std::optional<double> first_f64(std::string_view s) {
 
 // --- AdcSegment ----------------------------------------------------------
 
-std::vector<Ps> AdcSegment::sample_times() const {
+void AdcSegment::append_sample_times(std::vector<Ps>& out) const {
     const double d = dwell();
-    std::vector<Ps> out;
-    out.reserve(num_samples);
     for (std::size_t k = 0; k < num_samples; ++k) {
         out.push_back(Ps::from_secs(start + d * (static_cast<double>(k) + 0.5)));
     }
+}
+
+std::vector<Ps> AdcSegment::sample_times() const {
+    std::vector<Ps> out;
+    out.reserve(num_samples);
+    append_sample_times(out);
     return out;
 }
 
@@ -90,14 +94,26 @@ std::optional<double> RfEvent::rfd_peak(const DsvChannel& rfd) const {
         return std::nullopt;
     }
     const double end = start + duration;
-    const auto in_win = [&](double t) { return t >= start && t <= end; };
+
+    // Bracket the pulse window by binary search instead of testing every corner. The corners are
+    // sorted and `secs()` is monotonic in the raw count, so these bounds select exactly the
+    // indices `t >= start && t <= end` picked out before -- the same set, bit for bit. Scanning the
+    // whole channel twice per event instead made this quadratic: on `cones` that is 4,236 RF
+    // events over 309,230 RFD corners, 1.3 G iterations and ~1.1 s, paid by every DSV k-space call
+    // because `excitations()` goes through here.
+    const std::size_t lo = static_cast<std::size_t>(
+        std::lower_bound(pwl.t.begin(), pwl.t.end(), start,
+                         [](Ps corner, double s) { return corner.secs() < s; }) -
+        pwl.t.begin());
+    const std::size_t hi = static_cast<std::size_t>(
+        std::upper_bound(pwl.t.begin(), pwl.t.end(), end,
+                         [](double e, Ps corner) { return e < corner.secs(); }) -
+        pwl.t.begin());
 
     // Rust starts from f64::MIN (the most negative finite), not -infinity.
     double vmax = std::numeric_limits<double>::lowest();
-    for (std::size_t i = 0; i < pwl.t.size(); ++i) {
-        if (in_win(pwl.t[i].secs())) {
-            vmax = std::fmax(vmax, pwl.v[i]);
-        }
+    for (std::size_t i = lo; i < hi; ++i) {
+        vmax = std::fmax(vmax, pwl.v[i]);
     }
     if (vmax <= 0.0) {
         return std::nullopt;
@@ -109,9 +125,9 @@ std::optional<double> RfEvent::rfd_peak(const DsvChannel& rfd) const {
     double last = 0.0;
     double tp = 0.0;
     bool seen = false;
-    for (std::size_t i = 0; i < pwl.t.size(); ++i) {
+    for (std::size_t i = lo; i < hi; ++i) {
         const double t = pwl.t[i].secs();
-        if (in_win(t) && pwl.v[i] >= thr) {
+        if (pwl.v[i] >= thr) {
             if (!seen) {
                 first = t;
                 seen = true;
@@ -161,10 +177,16 @@ std::optional<std::size_t> Inf::col(const std::string& prefix) const {
 }
 
 std::vector<Ps> Inf::adc_sample_times() const {
-    std::vector<Ps> out;
+    // Count first, reserve once, then append in place -- rather than a vector per segment copied
+    // into a growing output, which allocated per segment and touched every sample twice.
+    std::size_t total = 0;
     for (const AdcSegment& s : adc) {
-        const std::vector<Ps> t = s.sample_times();
-        out.insert(out.end(), t.begin(), t.end());
+        total += s.num_samples;
+    }
+    std::vector<Ps> out;
+    out.reserve(total);
+    for (const AdcSegment& s : adc) {
+        s.append_sample_times(out);
     }
     return out;
 }

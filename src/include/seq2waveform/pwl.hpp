@@ -39,6 +39,12 @@ struct PiecewiseLinear {
     /// delegates here.
     std::vector<double> sample_at_sorted(const Ps* times, std::size_t count) const;
 
+    /// As above, writing `count` values into `out` rather than returning a vector. `out` must have
+    /// room for `count`. The counterpart of `moments_at_sorted_into`: it lets a caller sweep a long
+    /// grid in fixed-size chunks without materialising either the times or the values twice
+    /// (`DsvChannel::dense` does, over tens of millions of samples).
+    void sample_at_sorted_into(const Ps* times, std::size_t count, double* out) const;
+
     /// Exact integral of v*dt from `t0` to `t1` -- sum of trapezoids over the linear segments.
     /// The k-space building block: k(t) = integral from the excitation to t.
     double integral(Ps t0, Ps t1) const;

@@ -116,6 +116,14 @@ public:
     /// (Siemens frame, which includes the ~1020 us lead-in).
     virtual double duration() const = 0;
 
+    /// The first sample time of each ADC event -- all the excitation matching needs.
+    ///
+    /// Not one of the primitives: the default builds it from `adc_events()`, so a new source works
+    /// without supplying it. Both sources do override it, because the starts are available without
+    /// the samples, and on a long readout that is the difference between one number per event and
+    /// one per sample (4,216 against 21.5 M on `cones`).
+    virtual std::vector<Ps> adc_event_starts() const;
+
     // --- shared helpers --------------------------------------------------
 
     /// Build a Sampler, precomputing gx/gy/gz and their cumulative moments.
@@ -170,6 +178,7 @@ public:
     std::vector<std::tuple<Ps, double, double>> excitations() const override;
     std::vector<TriggerEvent> trigger_events() const override;
     double duration() const override;
+    std::vector<Ps> adc_event_starts() const override;
 
     Sequence& sequence() { return seq_; }
     const Sequence& sequence() const { return seq_; }

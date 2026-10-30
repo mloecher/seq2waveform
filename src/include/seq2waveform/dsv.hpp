@@ -24,6 +24,7 @@
 #include <istream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "seq2waveform/pwl.hpp"
@@ -57,8 +58,11 @@ struct DsvChannel {
     std::vector<double> dense() const;
 };
 
-/// Read and decode a `.dsv` channel from any stream. Throws `DsvError` on a malformed value line
-/// or a missing `HORIDELTA`/`VERTFACTOR`.
+/// Decode a `.dsv` channel from text already in memory. Throws `DsvError` on a malformed value
+/// line or a missing `HORIDELTA`/`VERTFACTOR`.
+DsvChannel read_dsv_text(std::string_view text);
+
+/// Read and decode a `.dsv` channel from any stream: slurps it, then calls `read_dsv_text`.
 DsvChannel read_dsv_channel(std::istream& in);
 
 /// Read and decode a `.dsv` file from disk.

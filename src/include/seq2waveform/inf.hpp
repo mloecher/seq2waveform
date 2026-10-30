@@ -38,6 +38,10 @@ struct AdcSegment {
 
     /// Center-of-dwell sample times: `start + dwell*((0..N)+0.5)`.
     std::vector<Ps> sample_times() const;
+
+    /// Append those same times to `out`, so a caller concatenating many segments fills one
+    /// reserved array instead of allocating a vector per segment and copying it out.
+    void append_sample_times(std::vector<Ps>& out) const;
 };
 
 /// A SYNC-column event, e.g. an external trigger.

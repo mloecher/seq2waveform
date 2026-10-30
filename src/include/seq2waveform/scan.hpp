@@ -65,8 +65,14 @@ bool parse_i64(std::string_view s, std::int64_t& out);
 /// Rust's `as i64` cast on a double: saturating at the int64 bounds, with NaN mapping to 0.
 ///
 /// A plain `static_cast` is undefined behaviour outside the range, so a corrupt shape repeat count
-/// would be a crash here and a defined (if useless) number in Rust. Shared so every float-to-int
-/// cast in the port goes through the same rule.
+/// would be a crash here and a defined (if useless) number in Rust. Used by every float-to-int
+/// cast that can see file data: the shape and `.dsv` repeat counts, and the raster indices in
+/// `resample_at_centers`.
+///
+/// `Ps::from_secs` is the deliberate exception -- it is the hottest primitive in the library, tens
+/// of millions of calls per run, and `std::llround` merely returns an unspecified value outside
+/// the range rather than being undefined. Reaching that range needs a time beyond 9.2e6 s
+/// (106 days), so the three extra branches would buy nothing.
 std::int64_t saturating_i64(double x);
 
 }  // namespace s2w

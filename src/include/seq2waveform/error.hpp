@@ -1,8 +1,9 @@
 // Error types for the core library.
 //
-// Ported from the Rust `error.rs`, message wording included: the parity suite compares the
-// exception text from both ports, which is a cheap end-to-end check that the parse loop stamped
-// the same source line on the same failure.
+// Ported from the Rust `error.rs`, message wording included. That was load-bearing while the
+// oracle existed -- the differential suite compared the exception text from both ports, a cheap
+// end-to-end check that the parse loop stamped the same source line on the same failure. The
+// wording is now just the documented behaviour, and `tests/test_parser.cpp` pins it.
 
 #pragma once
 
