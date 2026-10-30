@@ -121,12 +121,13 @@ template <typename T>
 using InAny = nb::ndarray<const T, nb::c_contig>;
 
 /// A Trace as the `(t, x, y, z)` tuple the Rust bindings return.
-nb::object trace_to_py(const s2w::Trace& tr) {
-    std::vector<double> x = tr.x;
-    std::vector<double> y = tr.y;
-    std::vector<double> z = tr.z;
-    return nb::make_tuple(secs_array(tr.t), to_numpy(std::move(x)), to_numpy(std::move(y)),
-                          to_numpy(std::move(z)));
+///
+/// By value, and every caller hands over a temporary, so the three axis arrays move into their
+/// capsules. Taking a `const&` and copying each one to have something movable cost a full
+/// duplicate of the output -- 144 MB on a whole-run `gradients_dense`.
+nb::object trace_to_py(s2w::Trace tr) {
+    return nb::make_tuple(secs_array(tr.t), to_numpy(std::move(tr.x)), to_numpy(std::move(tr.y)),
+                          to_numpy(std::move(tr.z)));
 }
 
 /// Flatten an N-D time array to Ps, keeping its shape so the sampled values can be reshaped back.
@@ -174,17 +175,17 @@ std::vector<nb::object> specs_to_py(const std::vector<s2w::SampleSpec>& specs) {
     return out;
 }
 
-nb::object flat_to_py(const s2w::FlatTrace& f) {
-    std::vector<double> kx = f.kx;
-    std::vector<double> ky = f.ky;
-    std::vector<double> kz = f.kz;
+/// By value for the same reason as `trace_to_py`, and it matters more here: the three k-space
+/// arrays are the whole run, so copying them to make them movable duplicated 517 MB on `cones`.
+/// `offsets` still has to be rebuilt -- size_t to int64 is a conversion, not a move.
+nb::object flat_to_py(s2w::FlatTrace f) {
     std::vector<std::int64_t> off;
     off.reserve(f.offsets.size());
     for (const std::size_t o : f.offsets) {
         off.push_back(static_cast<std::int64_t>(o));
     }
-    return nb::make_tuple(secs_array(f.t), to_numpy(std::move(kx)), to_numpy(std::move(ky)),
-                          to_numpy(std::move(kz)), to_numpy(std::move(off)));
+    return nb::make_tuple(secs_array(f.t), to_numpy(std::move(f.kx)), to_numpy(std::move(f.ky)),
+                          to_numpy(std::move(f.kz)), to_numpy(std::move(off)));
 }
 
 char axis_from_str(const std::string& axis) {
@@ -322,9 +323,11 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "adc_gradient_samples",
             [](const T& s) {
+                std::vector<s2w::Trace> traces = s.adc_gradient_samples();
                 std::vector<nb::object> out;
-                for (const s2w::Trace& tr : s.adc_gradient_samples()) {
-                    out.push_back(trace_to_py(tr));
+                out.reserve(traces.size());
+                for (s2w::Trace& tr : traces) {
+                    out.push_back(trace_to_py(std::move(tr)));
                 }
                 return out;
             },
@@ -336,9 +339,11 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "adc_kspace",
             [](const T& s) {
+                std::vector<s2w::Trace> traces = s.adc_kspace();
                 std::vector<nb::object> out;
-                for (const s2w::Trace& tr : s.adc_kspace()) {
-                    out.push_back(trace_to_py(tr));
+                out.reserve(traces.size());
+                for (s2w::Trace& tr : traces) {
+                    out.push_back(trace_to_py(std::move(tr)));
                 }
                 return out;
             },
@@ -362,9 +367,11 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "trigger_gradient_samples",
             [](const T& s, double delay, double dt, std::size_t n) {
+                std::vector<s2w::Trace> traces = s.trigger_gradient_samples(delay, dt, n);
                 std::vector<nb::object> out;
-                for (const s2w::Trace& tr : s.trigger_gradient_samples(delay, dt, n)) {
-                    out.push_back(trace_to_py(tr));
+                out.reserve(traces.size());
+                for (s2w::Trace& tr : traces) {
+                    out.push_back(trace_to_py(std::move(tr)));
                 }
                 return out;
             },
@@ -373,9 +380,11 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "trigger_kspace",
             [](const T& s, double delay, double dt, std::size_t n) {
+                std::vector<s2w::Trace> traces = s.trigger_kspace(delay, dt, n);
                 std::vector<nb::object> out;
-                for (const s2w::Trace& tr : s.trigger_kspace(delay, dt, n)) {
-                    out.push_back(trace_to_py(tr));
+                out.reserve(traces.size());
+                for (s2w::Trace& tr : traces) {
+                    out.push_back(trace_to_py(std::move(tr)));
                 }
                 return out;
             },
