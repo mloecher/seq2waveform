@@ -1,0 +1,63 @@
+[project]
+name = "seq2waveform-cpp"
+version = "0.1.0"
+description = "C++ port of seq2waveform: read Pulseq .seq and Siemens .dsv files into waveform arrays."
+# No upper bound: nanobind tracks new CPython releases, which is half the point of the port.
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[tool.scikit-build]
+build-dir = ".scikit-build"
+# The package lives next to this file; CMake drops `_core` into it via install(TARGETS ...).
+wheel.packages = ["seq2waveform_cpp"]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *-manylinux_i686 *-win32"
+test-command = "python -c \"import numpy as np, seq2waveform_cpp as s; w = s.PiecewiseLinear(np.array([0.0, 1.0]), np.array([0.0, 2.0])); assert w.value_at(0.5) == 1.0\""
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.13" }
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[tool.pixi.dependencies]
+python = "3.13.*"
+numpy = ">=2"
+pytest = "*"
+pip = "*"
+# Build toolchain. MSVC comes from the system Visual Studio install, as in gropt. `ninja` is
+# deliberately absent: without it CMake uses the Visual Studio generator, which finds MSVC
+# without needing vcvars on PATH.
+cmake = ">=3.17"
+nanobind = ">=2.0"
+scikit-build-core = ">=0.10"
+# Temporary, for the port only: builds the Rust extension from the sibling repo as the parity
+# oracle. Both of these go away at cut-over.
+maturin = ">=1.7"
+h5py = "*"
+
+[tool.pixi.activation.env]
+# The Rust repo is the parity oracle and owns the test corpus (testdata/ is gitignored, so it
+# exists only in that checkout). Relative to this project root; set it if your layout differs.
+S2W_RUST_REPO = "../seq2waveform"
+
+[tool.pixi.tasks]
+# Editable install. Also regenerates seq2waveform_cpp/_core.pyi from the built module, so the
+# stubs can never drift from the bindings.
+build = "python -m pip install --no-build-isolation -e ."
+# C++ core tests (ported from the Rust unit tests) via ctest.
+test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
+# Install the Rust implementation into this environment to compare against.
+build-oracle = "maturin develop --manifest-path $S2W_RUST_REPO/python/Cargo.toml"
+# The port's safety net: C++ vs Rust on every dataset, exact equality.
+test-parity = { cmd = "pytest tests/test_parity.py -v", depends-on = ["build", "build-oracle"] }
+# Everything.
+test = { depends-on = ["test-cpp", "test-parity"] }
