@@ -60,6 +60,13 @@ struct PiecewiseLinear {
     /// As above over a contiguous range; see `sample_at_sorted(const Ps*, std::size_t)`.
     std::vector<double> moments_at_sorted(const Ps* times, std::size_t count,
                                           const std::vector<double>& cum) const;
+
+    /// As above, writing `count` values into `out` rather than returning a vector. `out` must have
+    /// room for `count`. This is what the batched k-space path uses: it fills its slice of the
+    /// result in place, so a whole-run sampling neither allocates per event nor copies the values
+    /// a second time.
+    void moments_at_sorted_into(const Ps* times, std::size_t count,
+                                const std::vector<double>& cum, double* out) const;
 };
 
 }  // namespace s2w

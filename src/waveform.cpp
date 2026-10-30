@@ -238,6 +238,16 @@ PiecewiseLinear stitch(std::vector<PiecewiseLinear> pieces, double grad_raster) 
     std::vector<Ps> t;
     std::vector<double> v;
 
+    // One allocation each, from the exact total. Growing instead would recopy the whole output
+    // every 1.5x (MSVC's growth factor) -- tens of MB of memcpy on a long sequence. The slack is
+    // for the forced ramps, which add at most two corners per piece boundary.
+    std::size_t total = 2 * pieces.size();
+    for (const PiecewiseLinear& piece : pieces) {
+        total += piece.t.size();
+    }
+    t.reserve(total);
+    v.reserve(total);
+
     for (PiecewiseLinear& piece : pieces) {
         std::vector<Ps> lt = std::move(piece.t);
         std::vector<double> lv = std::move(piece.v);
@@ -433,7 +443,9 @@ void push_grad(const Sequence& seq, std::uint32_t id, Ps curr_dur, double grad_r
 /// Stitch the per-block pieces into one channel, then apply the gradient mode's final pass.
 PiecewiseLinear finish_channel(const Sequence& seq, std::vector<PiecewiseLinear> pieces,
                                double grad_raster) {
-    const PiecewiseLinear pwl = stitch(std::move(pieces), grad_raster);
+    // Deliberately not `const`: a const local cannot be implicitly moved on return, so `return
+    // pwl` would deep-copy both corner arrays -- 43 MB per call on `cones`.
+    PiecewiseLinear pwl = stitch(std::move(pieces), grad_raster);
     if (seq.grad_mode == GradMode::Dsv) {
         return resample_at_centers(pwl, grad_raster);
     }
@@ -517,9 +529,14 @@ Waveforms waveforms(const Sequence& seq) {
     const double rf_raster = seq.definition_f64("RadiofrequencyRasterTime").value_or(1e-6);
 
     Waveforms w;
+    // At most one piece per block on each axis; sizing up front keeps the piece lists from
+    // regrowing (and moving every piece) as the walk proceeds.
     std::vector<PiecewiseLinear> gx;
     std::vector<PiecewiseLinear> gy;
     std::vector<PiecewiseLinear> gz;
+    gx.reserve(seq.blocks.size());
+    gy.reserve(seq.blocks.size());
+    gz.reserve(seq.blocks.size());
 
     walk(seq, [&](Ps start, const Block& block) {
         if (block.rf != 0) {
@@ -551,6 +568,7 @@ Waveforms waveforms(const Sequence& seq) {
 PiecewiseLinear gradient(const Sequence& seq, char axis) {
     const double grad_raster = grad_raster_of(seq);
     std::vector<PiecewiseLinear> pieces;
+    pieces.reserve(seq.blocks.size());  // at most one piece per block
     walk(seq, [&](Ps start, const Block& block) {
         std::uint32_t id = 0;
         switch (axis) {
@@ -572,7 +590,23 @@ PiecewiseLinear gradient(const Sequence& seq, char axis) {
 }
 
 std::vector<Ps> adc_times(const Sequence& seq) {
+    // Count first, then reserve once. Reserving per block instead -- reserve(size() + num) inside
+    // the walk -- asks for the exact new size every time, which defeats the geometric growth
+    // push_back gives for free and recopies the whole array on every ADC event. On `cones` (4216
+    // events, 21.5 M samples) that was 47 s of pure memcpy; this is ~60 ms.
+    std::size_t total = 0;
+    for (const Block& b : seq.blocks) {
+        if (b.adc == 0) {
+            continue;
+        }
+        const auto it = seq.adc.find(b.adc);
+        if (it != seq.adc.end()) {
+            total += it->second.num;
+        }
+    }
+
     std::vector<Ps> out;
+    out.reserve(total);
     walk(seq, [&](Ps start, const Block& block) {
         if (block.adc == 0) {
             return;
@@ -582,7 +616,6 @@ std::vector<Ps> adc_times(const Sequence& seq) {
             return;
         }
         const Adc& adc = it->second;
-        out.reserve(out.size() + adc.num);
         for (std::uint32_t k = 0; k < adc.num; ++k) {
             out.push_back(start +
                           Ps::from_secs(adc.delay + adc.dwell * (static_cast<double>(k) + 0.5)));

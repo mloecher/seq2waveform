@@ -133,7 +133,60 @@ measurement put the port 2.5x *ahead* of Rust, which was nonsense — `maturin d
 debug oracle. Release Rust is a genuinely fast baseline.
 
 The remaining ~35 ms on `cones` is `trim`/`starts_with`/dispatch per line plus the `std::map`
-inserts. Not obviously worth chasing; the h5-comparison work in step 3 will dwarf it.
+inserts. Not obviously worth chasing -- and it is now a small share of any real pipeline, as the
+next section shows.
+
+### Whole-pipeline performance, measured
+
+Done once the port hit full parity, with **both sides in release** and the parity suite as the
+check that nothing moved. Run `scripts/bench.py --compare-rust` to reproduce, and
+`tests/bench_expand.cpp` for a native breakdown with no Python in the way (it mirrors the Rust
+repo's `examples/bench_expand.rs` + `examples/time_kspace.rs`, phase for phase).
+
+`cones`, the worst case at 14.9 MB and 21,140 blocks, C++/Rust ratios from Python:
+
+| call | before | after |
+|---|---|---|
+| `Sequence(path)` | 0.95x | 0.96x |
+| `gradient('x')` | 1.67x | 1.17x |
+| `adc_times()` | **419x** | **0.86x** |
+| `adc_kspace_flat()` | 1.43x | 1.21x |
+| `gradients_dense(1e-4)` | 1.85x | 1.20x |
+
+Five fixes, all of them allocation rather than arithmetic. The native breakdown is what found
+them: the sampling *kernel* was already at parity (93 M samples/s against Rust's 89 M), so every
+gap had to be in a construction phase.
+
+1. **`adc_times` reserved inside its loop.** `out.reserve(out.size() + adc.num)` per ADC event
+   asks for the *exact* new size, which defeats the geometric growth `push_back` gives for free and
+   recopies the whole array every event. 4216 events over 21.5 M samples = 47 **seconds** of pure
+   memcpy, against Rust's 96 ms. Counting first and reserving once makes it 62 ms. A per-iteration
+   `reserve` is worse than no `reserve` at all; `grep -rn "reserve(" src/ | grep "size() +"` keeps
+   it from coming back.
+2. **`finish_channel` returned a `const` local.** A const local cannot be implicitly moved on
+   return, so `return pwl` deep-copied both corner arrays — 43 MB per `gradient()` call. Dropping
+   the `const` was the whole fix. `scripts/` has no detector for this; the pattern to look for is a
+   `const` non-scalar local that is later `return`ed.
+3. **`stitch` grew its output unreserved**, as did **`flatten_specs`**. Both concatenate thousands
+   of pieces into one array, and MSVC's `std::vector` grows at 1.5x (Rust's `Vec` doubles), so the
+   recopying is worse here than the equivalent Rust. Both now total the pieces first.
+4. **`kspace_flat` allocated a temporary per event per axis.** `moments_at_sorted` returned a fresh
+   40 KB vector that was then copied into the result slice so a constant could be subtracted:
+   12,648 allocations and 64 M redundant element copies on `cones`. The new
+   `moments_at_sorted_into` writes straight into the slice, and the vector-returning form delegates
+   to it, so there is still one implementation.
+5. **`gradients_dense` copied its own time grid** into the result instead of moving a dying local.
+
+What is left is 1.2–1.4x on the calls that build large arrays, and a chunk of that is the
+nanobind-vs-pyo3 conversion rather than the core — native `gradient('x')` is 45.2 ms against Rust's
+45.8, while through Python it reads 1.17x. Closing the rest would mean an interface change
+(`WaveformSource` exposes `gradient(axis)` one axis at a time, so `gradients_dense` walks the
+blocks three times where `waveforms()` walks once) for a win worth tens of ms. Not taken.
+
+Two general lessons worth keeping. **Measure native before blaming the bindings** — the opposite
+was true here every time. And **a 1.2x gap and a 400x gap look the same from Python**: the 47 s
+`adc_times` had been in the tree since step 3 and the parity suite never minded, because it was
+correct, only slow.
 
 ## Layout
 
@@ -499,10 +552,9 @@ C++-specific, added by the port:
 7. **`parse_model` / `parse_shapes` exist on both sides purely for parity testing** — the Rust
    bindings had no model-level oracle beyond a block count. Neither is re-exported from its
    package. Delete both at cut-over.
-8. **`maturin develop` builds the oracle in debug** (`build-oracle` passes no `--release`). Float
-   results are identical either way — Rust applies no fast-math — but the parity suite runs in
-   ~4.7 s against a release oracle versus ~17 s against a debug one. Debug buys only integer
-   overflow checks. Worth switching if the test loop ever feels slow.
+8. ~~**`maturin develop` builds the oracle in debug.**~~ Closed: `build-oracle` now passes
+   `--release`. Float results are identical either way (Rust applies no fast-math), but the whole
+   suite runs in ~55 s instead of ~5.5 min, and timing comparisons are meaningless without it.
 
 ## Port order
 

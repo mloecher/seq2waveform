@@ -35,3 +35,9 @@ add_test(NAME dsvset COMMAND test_dsvset)
 add_executable(bench_scan bench_scan.cpp)
 target_link_libraries(bench_scan PRIVATE seq2waveform_core)
 target_include_directories(bench_scan PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../extern)
+
+# Times parse, expansion and the k-space pipeline natively, mirroring the Rust repo's
+# examples/bench_expand.rs + examples/time_kspace.rs so the two read side by side. Not a ctest --
+# it needs a dataset path.
+add_executable(bench_expand bench_expand.cpp)
+target_link_libraries(bench_expand PRIVATE seq2waveform_core)

@@ -139,30 +139,35 @@ std::vector<double> PiecewiseLinear::moments_at_sorted(const std::vector<Ps>& ti
 
 std::vector<double> PiecewiseLinear::moments_at_sorted(const Ps* times, std::size_t count,
                                                        const std::vector<double>& cum) const {
+    std::vector<double> out(count, 0.0);
+    moments_at_sorted_into(times, count, cum, out.data());
+    return out;
+}
+
+void PiecewiseLinear::moments_at_sorted_into(const Ps* times, std::size_t count,
+                                             const std::vector<double>& cum, double* out) const {
     const std::size_t n = t.size();
     if (n == 0 || count == 0) {
-        return std::vector<double>(count, 0.0);
+        std::fill(out, out + count, 0.0);
+        return;
     }
-    std::vector<double> out;
-    out.reserve(count);
     std::size_t j = std::max<std::size_t>(first_past(t, times[0]), 1);
     for (std::size_t i = 0; i < count; ++i) {
         const Ps at = times[i];
         if (at <= t[0]) {
-            out.push_back(0.0);
+            out[i] = 0.0;
             continue;
         }
         if (at >= t[n - 1]) {
-            out.push_back(cum[n - 1]);
+            out[i] = cum[n - 1];
             continue;
         }
         while (j < n && t[j] <= at) {
             ++j;
         }
         const double vt = lerp_in_segment(*this, j, at);
-        out.push_back(cum[j - 1] + 0.5 * (v[j - 1] + vt) * (at - t[j - 1]).secs());
+        out[i] = cum[j - 1] + 0.5 * (v[j - 1] + vt) * (at - t[j - 1]).secs();
     }
-    return out;
 }
 
 }  // namespace s2w

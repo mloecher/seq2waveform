@@ -55,8 +55,10 @@ S2W_RUST_REPO = "../seq2waveform"
 build = "python -m pip install --no-build-isolation -e ."
 # C++ core tests (ported from the Rust unit tests) via ctest.
 test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
-# Install the Rust implementation into this environment to compare against.
-build-oracle = "maturin develop --manifest-path $S2W_RUST_REPO/python/Cargo.toml"
+# Install the Rust implementation into this environment to compare against. --release matters:
+# the float results are identical either way (Rust applies no fast-math), but a debug oracle makes
+# the parity suite ~3x slower and makes any timing comparison meaningless.
+build-oracle = "maturin develop --release --manifest-path $S2W_RUST_REPO/python/Cargo.toml"
 # The port's safety net: C++ vs Rust on every dataset, exact equality.
 test-parity = { cmd = "pytest tests/test_parity.py -v", depends-on = ["build", "build-oracle"] }
 # Independent ground truth: C++ vs Pulseq's own reference h5, at 1e-4. The only check that does
