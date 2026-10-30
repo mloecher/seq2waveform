@@ -181,6 +181,120 @@ def parse_model(path: str) -> dict:
         of `(num, duration_s, rf, gx, gy, gz, adc, ext)`. All times are in seconds.
     """
 
+class Sequence:
+    """
+    A parsed Pulseq sequence: parse once, then query waveforms many times without
+    re-parsing.
+
+    Parameters
+    ----------
+    path : str
+        Path to a Pulseq `.seq` file (format v1.4/1.5).
+    gradient_mode : {'pulseq', 'centers', 'dsv'}, optional
+        How centers-sampled arbitrary gradients render; see the `gradient_mode`
+        property. Default 'pulseq'.
+
+    Raises
+    ------
+    ValueError
+        If a line is malformed, naming the source line, or if `gradient_mode` is not
+        one of the three names.
+    """
+
+    def __init__(self, path: str, gradient_mode: str = 'pulseq') -> None: ...
+
+    @property
+    def num_blocks(self) -> int:
+        """Number of blocks in the parsed sequence."""
+
+    @property
+    def gradient_mode(self) -> str:
+        """
+        How arbitrary/centers-sampled gradients render:
+
+        - `"pulseq"` (default): edge reconstruction, matches the h5 (can staircase on
+          fast waveforms);
+        - `"centers"`: connect the center samples for *arbitrary* shapes (smooth),
+          trapezoids stay sharp;
+        - `"dsv"`: resample the whole channel onto the raster centers -- rounds
+          trapezoid corners *and* smooths arbitrary shapes, i.e. the Siemens DSV /
+          commanded waveform, one consistent representation.
+        """
+
+    @gradient_mode.setter
+    def gradient_mode(self, arg: str, /) -> None: ...
+
+    def gradient(self, axis: str) -> tuple:
+        """
+        Expand one gradient channel to piecewise-linear corners.
+
+        Parameters
+        ----------
+        axis : {'x', 'y', 'z'}
+            Which gradient channel.
+
+        Returns
+        -------
+        corner_times : ndarray of float64
+            Corner times (s), strictly increasing.
+        corner_values : ndarray of float64
+            Corner amplitudes (Hz/m).
+        """
+
+    def adc_times(self) -> Annotated[NDArray[numpy.float64], dict(shape=(None,))]:
+        """
+        All ADC sample times (s), flattened across every ADC event.
+
+        Returns
+        -------
+        ndarray of float64
+            Sample times (s), at dwell centers: `delay + dwell * (k + 0.5)`.
+        """
+
+    def adc_events(self) -> list[object]:
+        """
+        ADC sample times split per event, as the `.seq` records them.
+
+        Returns
+        -------
+        list of ndarray
+            One float64 array of sample times (s) per ADC event.
+        """
+
+    def adc_events_meta(self) -> list[object]:
+        """
+        ADC events with their per-event frequency and phase offsets.
+
+        Returns
+        -------
+        list of tuple
+            `(times_s, freq_hz, phase_rad)` per ADC event.
+        """
+
+    def rf_events(self) -> list[tuple[float, float, float, str]]:
+        """
+        RF pulses as `(center_s, freq_hz, phase_rad, use_name)`.
+
+        `use_name` is the real RF use; undefined pulses are NOT relabelled as excitation,
+        which is a deliberate divergence from Pulseq (its h5 routes both into
+        `/excitation`, so an h5 comparison has to union the two).
+
+        Returns
+        -------
+        list of tuple
+            One entry per RF event, in block order.
+        """
+
+    def triggers(self) -> list[tuple[int, float, float]]:
+        """
+        Trigger events as `(channel, time_s, duration_s)`.
+
+        Returns
+        -------
+        list of tuple
+            One entry per resolved `extension TRIGGERS` event, in block order.
+        """
+
 def parse_shapes(path: str) -> dict:
     """
     Dump the `[SHAPES]` library of a `.seq` file.

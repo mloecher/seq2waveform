@@ -256,3 +256,81 @@ def test_parse_error_matches_rust(tmp_path):
 
     assert str(cpp_err.value) == str(rust_err.value)
     assert "line 5" in str(cpp_err.value), "the blank and comment lines were not counted"
+
+
+# --- waveform expansion (port step 3) ------------------------------------------------------
+#
+# These compare the C++ Sequence against the Rust one directly, rather than feeding Rust's output
+# into a C++ PiecewiseLinear as the step-1 tests above do. Everything in step 3 lands in
+# `gradient()`'s two arrays: the block walk, the trapezoid corners, restoreAdditionalShapeSamples,
+# the cross-block stitch and the DSV resampling.
+
+GRAD_MODES = ("pulseq", "centers", "dsv")
+
+
+@pytest.mark.parametrize("mode", GRAD_MODES)
+def test_gradient_corners_match_rust(seq_path, mode):
+    """Every gradient channel, in every mode, corner for corner.
+
+    Exact equality: both ports accumulate the same int64 picosecond times in the same order, and
+    the corner *count* is checked first because a reconstruction that drops or adds a corner is the
+    most likely porting failure and the least readable as an array diff.
+    """
+    r = rust.Sequence(seq_path, mode)
+    c = cpp.Sequence(seq_path, mode)
+    assert c.num_blocks == r.num_blocks, "block count differs"
+    assert c.gradient_mode == r.gradient_mode == mode
+
+    corners = 0
+    for ax in "xyz":
+        rt, rv = r.gradient(ax)
+        ct, cv = c.gradient(ax)
+        assert len(ct) == len(rt), f"g{ax} [{mode}]: {len(ct)} corners vs Rust's {len(rt)}"
+        assert np.array_equal(ct, rt), f"g{ax} [{mode}]: corner times differ"
+        assert np.array_equal(cv, rv), f"g{ax} [{mode}]: corner values differ"
+        corners += len(ct)
+    # Guard against a vacuous pass: a dataset with no gradient corners at all would compare equal
+    # trivially, and silently stop testing the thing this step is about.
+    assert corners > 0, f"[{mode}] no gradient corners on any axis -- nothing was compared"
+
+
+def test_adc_times_match_rust(seq_path):
+    """Flattened ADC sample times, which pin the block walk's accumulated time base."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    assert np.array_equal(c.adc_times(), r.adc_times()), "ADC sample times differ"
+
+
+def test_adc_events_match_rust(seq_path):
+    """The per-event ADC split, with each event's freq/phase offsets.
+
+    `adc_times` and `adc_events` are separate focused walks on both sides, so comparing both
+    catches one of them drifting from the other.
+    """
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    rust_meta = r.adc_events_meta()
+    cpp_meta = c.adc_events_meta()
+    assert len(cpp_meta) == len(rust_meta), "number of ADC events differs"
+    for i, (want, got) in enumerate(zip(rust_meta, cpp_meta)):
+        assert np.array_equal(got[0], want[0]), f"ADC event {i}: sample times differ"
+        assert got[1] == want[1], f"ADC event {i}: freq differs"
+        assert got[2] == want[2], f"ADC event {i}: phase differs"
+
+
+def test_rf_events_match_rust(seq_path):
+    """RF centers, offsets and `use` names.
+
+    The `use` name matters: both ports deliberately keep the real use rather than folding
+    undefined pulses into excitation, so a port that "helpfully" relabelled them would fail here.
+    """
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    assert c.rf_events() == r.rf_events(), "RF events differ"
+
+
+def test_triggers_match_rust(seq_path):
+    """Resolved trigger events -- the extension linked-list walk."""
+    r = rust.Sequence(seq_path)
+    c = cpp.Sequence(seq_path)
+    assert c.triggers() == r.triggers(), "trigger events differ"

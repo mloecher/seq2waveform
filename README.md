@@ -6,10 +6,12 @@ files into waveform arrays, with k-space sampling at arbitrary times.
 Built with nanobind + scikit-build-core, so the Python type stubs (docstrings and `NDArray`
 annotations included) are regenerated from the compiled module on every build.
 
-**Status: early.** The time type, the piecewise-linear core and the Pulseq `.seq` reader are
-ported and verified bit-exact against the Rust implementation — 41 differential tests covering
-every event library, every shape and the parse-error messages. Parsing runs at parity with the
-Rust version. Waveform expansion, the sampler and the DSV/INF readers are not started.
+**Status: in progress.** The time type, the piecewise-linear core, the Pulseq `.seq` reader and
+waveform expansion are ported and verified bit-exact against the Rust implementation — 76
+differential tests covering every event library, every shape, the parse-error messages, and 24.8 M
+gradient corners across all three gradient modes. Parsing runs at parity with the Rust version.
+The sampler/k-space and the DSV/INF readers are not started, and the reference-h5 comparison waits
+on the sampler.
 
 ## Build and test
 

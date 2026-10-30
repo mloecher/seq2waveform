@@ -28,6 +28,7 @@
 #include "seq2waveform/parser.hpp"
 #include "seq2waveform/pwl.hpp"
 #include "seq2waveform/time.hpp"
+#include "seq2waveform/waveform.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -153,6 +154,52 @@ nb::dict parse_model(const std::string& path) {
     d["ext_nodes"] = nb::cast(ext_nodes);
     d["ext_type_names"] = nb::cast(seq.ext_type_names);
     return d;
+}
+
+/// Corner or sample times as float64 seconds -- the Rust bindings' `secs_arr`.
+///
+/// Seconds rather than picoseconds is lossless for parity here: both ports multiply the raw int64
+/// by 1e-12, and sequence times stay below 1e15 ps, well inside the 2^53 where that map is
+/// injective. So an exact comparison of seconds is an exact comparison of picoseconds.
+Out<double> secs_array(const std::vector<s2w::Ps>& t) {
+    std::vector<double> out;
+    out.reserve(t.size());
+    for (const s2w::Ps x : t) {
+        out.push_back(x.secs());
+    }
+    return to_numpy(std::move(out));
+}
+
+s2w::GradMode grad_mode_from_str(const std::string& mode) {
+    if (mode == "pulseq") {
+        return s2w::GradMode::Pulseq;
+    }
+    if (mode == "centers") {
+        return s2w::GradMode::Centers;
+    }
+    if (mode == "dsv") {
+        return s2w::GradMode::Dsv;
+    }
+    throw nb::value_error("gradient_mode must be \"pulseq\", \"centers\", or \"dsv\"");
+}
+
+const char* grad_mode_to_str(s2w::GradMode m) {
+    switch (m) {
+        case s2w::GradMode::Centers:
+            return "centers";
+        case s2w::GradMode::Dsv:
+            return "dsv";
+        case s2w::GradMode::Pulseq:
+            break;
+    }
+    return "pulseq";
+}
+
+char axis_from_str(const std::string& axis) {
+    if (axis.size() != 1 || (axis[0] != 'x' && axis[0] != 'y' && axis[0] != 'z')) {
+        throw nb::value_error("axis must be x, y, or z");
+    }
+    return axis[0];
 }
 
 nb::dict parse_shapes(const std::string& path) {
@@ -385,6 +432,130 @@ NB_MODULE(_core, m) {
           "    `adc`, `triggers`, `ext_nodes` and `ext_type_names`. The event libraries are\n"
           "    `{id: tuple}` in the field order of the corresponding struct; `blocks` is a list\n"
           "    of `(num, duration_s, rf, gx, gy, gz, adc, ext)`. All times are in seconds.");
+
+    nb::class_<s2w::Sequence>(
+        m, "Sequence",
+        "A parsed Pulseq sequence: parse once, then query waveforms many times without\n"
+        "re-parsing.\n\n"
+        "Parameters\n"
+        "----------\n"
+        "path : str\n"
+        "    Path to a Pulseq `.seq` file (format v1.4/1.5).\n"
+        "gradient_mode : {'pulseq', 'centers', 'dsv'}, optional\n"
+        "    How centers-sampled arbitrary gradients render; see the `gradient_mode`\n"
+        "    property. Default 'pulseq'.\n\n"
+        "Raises\n"
+        "------\n"
+        "ValueError\n"
+        "    If a line is malformed, naming the source line, or if `gradient_mode` is not\n"
+        "    one of the three names.")
+        .def(
+            "__init__",
+            [](s2w::Sequence* self, const std::string& path, const std::string& gradient_mode) {
+                const s2w::GradMode mode = grad_mode_from_str(gradient_mode);
+                new (self) s2w::Sequence(s2w::parse_file(path));
+                self->grad_mode = mode;
+            },
+            "path"_a, "gradient_mode"_a = "pulseq")
+        .def_prop_ro(
+            "num_blocks", [](const s2w::Sequence& s) { return s.blocks.size(); },
+            "Number of blocks in the parsed sequence.")
+        .def_prop_rw(
+            "gradient_mode", [](const s2w::Sequence& s) { return grad_mode_to_str(s.grad_mode); },
+            [](s2w::Sequence& s, const std::string& mode) { s.grad_mode = grad_mode_from_str(mode); },
+            "How arbitrary/centers-sampled gradients render:\n\n"
+            "- `\"pulseq\"` (default): edge reconstruction, matches the h5 (can staircase on\n"
+            "  fast waveforms);\n"
+            "- `\"centers\"`: connect the center samples for *arbitrary* shapes (smooth),\n"
+            "  trapezoids stay sharp;\n"
+            "- `\"dsv\"`: resample the whole channel onto the raster centers -- rounds\n"
+            "  trapezoid corners *and* smooths arbitrary shapes, i.e. the Siemens DSV /\n"
+            "  commanded waveform, one consistent representation.")
+        .def(
+            "gradient",
+            [](const s2w::Sequence& s, const std::string& axis) {
+                const s2w::PiecewiseLinear g = s2w::gradient(s, axis_from_str(axis));
+                std::vector<double> v = g.v;
+                return nb::make_tuple(secs_array(g.t), to_numpy(std::move(v)));
+            },
+            "axis"_a,
+            "Expand one gradient channel to piecewise-linear corners.\n\n"
+            "Parameters\n"
+            "----------\n"
+            "axis : {'x', 'y', 'z'}\n"
+            "    Which gradient channel.\n\n"
+            "Returns\n"
+            "-------\n"
+            "corner_times : ndarray of float64\n"
+            "    Corner times (s), strictly increasing.\n"
+            "corner_values : ndarray of float64\n"
+            "    Corner amplitudes (Hz/m).")
+        .def(
+            "adc_times", [](const s2w::Sequence& s) { return secs_array(s2w::adc_times(s)); },
+            "All ADC sample times (s), flattened across every ADC event.\n\n"
+            "Returns\n"
+            "-------\n"
+            "ndarray of float64\n"
+            "    Sample times (s), at dwell centers: `delay + dwell * (k + 0.5)`.")
+        .def(
+            "adc_events",
+            [](const s2w::Sequence& s) {
+                std::vector<nb::object> out;
+                for (const s2w::AdcEvent& e : s2w::adc_events(s)) {
+                    out.push_back(nb::cast(secs_array(e.t)));
+                }
+                return out;
+            },
+            "ADC sample times split per event, as the `.seq` records them.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of ndarray\n"
+            "    One float64 array of sample times (s) per ADC event.")
+        .def(
+            "adc_events_meta",
+            [](const s2w::Sequence& s) {
+                std::vector<nb::object> out;
+                for (const s2w::AdcEvent& e : s2w::adc_events(s)) {
+                    out.push_back(nb::make_tuple(secs_array(e.t), e.freq, e.phase));
+                }
+                return out;
+            },
+            "ADC events with their per-event frequency and phase offsets.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    `(times_s, freq_hz, phase_rad)` per ADC event.")
+        .def(
+            "rf_events",
+            [](const s2w::Sequence& s) {
+                std::vector<std::tuple<double, double, double, std::string>> out;
+                for (const s2w::RfMeta& r : s2w::rf_events_meta(s)) {
+                    out.emplace_back(r.center.secs(), r.freq, r.phase, s2w::rf_use_name(r.use));
+                }
+                return out;
+            },
+            "RF pulses as `(center_s, freq_hz, phase_rad, use_name)`.\n\n"
+            "`use_name` is the real RF use; undefined pulses are NOT relabelled as excitation,\n"
+            "which is a deliberate divergence from Pulseq (its h5 routes both into\n"
+            "`/excitation`, so an h5 comparison has to union the two).\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    One entry per RF event, in block order.")
+        .def(
+            "triggers",
+            [](const s2w::Sequence& s) {
+                std::vector<std::tuple<std::uint32_t, double, double>> out;
+                for (const s2w::TriggerEvent& t : s2w::trigger_events(s)) {
+                    out.emplace_back(t.channel, t.time.secs(), t.duration.secs());
+                }
+                return out;
+            },
+            "Trigger events as `(channel, time_s, duration_s)`.\n\n"
+            "Returns\n"
+            "-------\n"
+            "list of tuple\n"
+            "    One entry per resolved `extension TRIGGERS` event, in block order.");
 
     m.def("parse_shapes", &parse_shapes, "path"_a,
           "Dump the `[SHAPES]` library of a `.seq` file.\n\n"

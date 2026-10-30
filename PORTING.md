@@ -41,20 +41,41 @@ Built and verified:
 - `src/include/seq2waveform/model.hpp`, `src/model.cpp` — the structs, `RfUse`, `GradMode`,
   `Shape::decompressed`, `Sequence::definition_f64`.
 - `src/include/seq2waveform/parser.hpp`, `src/parser.cpp` — the `[SECTION]` reader.
+- `src/include/seq2waveform/waveform.hpp`, `src/waveform.cpp` — the block walk and expansion:
+  `waveforms`, `gradient`, `adc_times`, `adc_events`, `rf_events_meta`, `trigger_events`, plus
+  `stitch`, `restore_additional_shape_samples` and `resample_at_centers`. Rust puts these on
+  `Sequence` via an `impl` block in the module; C++ cannot, so they are free functions over
+  `const Sequence&` and `model.hpp` stays free of waveform concerns. The last two are also
+  declared in `detail/waveform_detail.hpp` so the tests can reach them directly.
 - `bindings/seq2waveform_wrapper.cpp` — nanobind module `_core`, with the zero-copy `to_numpy`
   capsule helper that every array return must go through.
 - `tests/test_pwl.cpp` — the Rust unit tests from `time.rs` and `pwl.rs`, ported.
 - `tests/test_parser.cpp` — the Rust unit tests from `model.rs` and `parser/mod.rs`, ported, plus
   scanning tests that have no Rust counterpart (Rust gets that behaviour free from `str::parse`).
 - `tests/test_parity.py` — differential tests against the Rust extension on the real datasets.
-  41 of them as of step 2; it compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed shape
-  samples across the five datasets, all exactly equal.
+  76 of them as of step 3. Step 2 compared 25,300 blocks, 2,051 shapes and 1.36 M decompressed
+  shape samples; step 3 added 24.8 M gradient corners across three modes and three axes, 27.3 M
+  ADC sample times, 4,601 RF events and 4,261 triggers. All exactly equal. A one-ULP perturbation
+  of a single corner value does fail the suite, which is worth re-checking whenever a new
+  comparison is added -- an assertion that cannot fail is worse than no assertion.
+- `tests/test_waveform.cpp` — the Rust unit tests from `waveform.rs`, ported. Two matter most:
+  `resample_jump_is_exact_vs_bruteforce` re-derives the DSV resampling the slow way (`value_at` at
+  every center, then the same collinear drop) and demands the fast path's segment-skipping jump
+  agree exactly; and `dsv_mode_reads_zero_outside_the_channel` is a regression test for the
+  lead-in/lead-out centers.
 - `tests/bench_scan.cpp` — guards the vendored fast_float: asserts it returns identical *bit
   patterns* to this toolchain's `std::from_chars` for every `[SHAPES]` token (1,289,657 of
   1,289,657 across the datasets), and times both. Run it after bumping the vendored version:
   `cmake --build build-tests --config Release --target bench_scan`, then pass it a `.seq` path.
 
-Not started: waveform expansion, sampler, DSV, INF. See **Port order**.
+Not started: the sampler and k-space, DSV, INF. See **Port order**.
+
+> **Step 3 was ported from an uncommitted change.** `crates/seq2waveform/src/waveform.rs` had an
+> uncommitted fix to `resample_at_centers` (the lead-in/lead-out centers, so a DSV channel reads
+> zero outside its range) when this port was written, and `build-oracle` builds the oracle from the
+> working tree — so that is the behaviour the C++ side matches and the parity suite pins. If that
+> change is ever reverted or reworked in the Rust repo, DSV-mode parity will break here and the
+> failure will look like a C++ bug. Commit it there.
 
 ### Parsing performance, measured
 
@@ -164,6 +185,26 @@ summary line, not just the exit code.
 **The two frames are the crux of this project.** The `.seq` and `.h5` share the Pulseq frame. The
 DSV lives in the Siemens frame, later by the INF-encoded lead-in. Everything that compares the two
 must shift by that lead-in, and must read it from the INF rather than fitting it.
+
+## Which dataset covers which gradient branch
+
+`build_grad_piece` has four branches and `restore_additional_shape_samples` has two, and no single
+dataset exercises them all. Worth knowing before you change one, because the parity suite can stay
+green while a branch goes untested. `time_shape = 0` means a centers-sampled shape.
+
+| dataset | traps | arbs | centers-sampled | branch exercised |
+|---|---|---|---|---|
+| cones | 1 | 3531 | 3531 | restore's **spiral fallback** |
+| girf | 22 | 20 | 20 | restore's **main reconstruction** |
+| sync_osc | 2 | 1 | 1 | restore's main reconstruction |
+| epi | 6 | 3 | 0 | the non-centers branches (padded / extended trapezoid) |
+| epi_fatsat | 7 | 3 | 0 | the non-centers branches |
+
+`cones` is a spiral, so every one of its shapes fails the `edge_rest[n] ≈ last` check and takes the
+fallback. That fallback emits exactly what `GradMode::Centers` emits, which is why `pulseq` and
+`centers` modes produce *identical* output on `cones`, `epi` and `epi_fatsat` — only `girf` makes
+the two modes differ. So the main reconstruction path rests on `girf` plus the
+`restore_recovers_a_triangle` unit test. Add a centers-sampled non-spiral dataset if you touch it.
 
 ## Validation thresholds
 
@@ -374,9 +415,10 @@ Each step: port the module, add its C++ tests, extend `tests/test_parity.py`, an
    gets from the standard library. Oracle: `parse_file` block count, then every event library and
    every shape compared field by field via `parse_model` / `parse_shapes`, and the parse-error
    message compared verbatim.
-3. **`waveform.cpp`** — the hard one. Block walk, trapezoid corners,
-   `restoreAdditionalShapeSamples`, the stitch, all three gradient modes. Oracle: `seq.gradient(ax)`
-   corner times and values, exactly; then the h5 at 1e-4.
+3. ~~`waveform.cpp`~~ — done, against the `seq.gradient(ax)` oracle: 24.8 M gradient corners over
+   three modes and three axes, 27.3 M ADC sample times, 4,601 RF events and 4,261 triggers, all
+   exactly equal. **The h5 comparison at 1e-4 is still outstanding** — it needs the dense sampler
+   from step 4, and it is what would catch an error both ports share.
 4. **`sample.cpp`** — `Sampler`, the spec builders, k-space, the flat batched path. Oracle:
    `sampler().gradients`, `.kspace`, `.kspace_flat`, `adc_kspace_flat`.
    Rust's `WaveformSource` trait with default methods maps to an abstract base class whose
@@ -430,8 +472,9 @@ Read PORTING.md here first — it has the layout, the test corpus, the validatio
 case the Rust version earned the hard way, the known gaps and the port order. Then read the Rust
 module you are porting under ../seq2waveform/crates/seq2waveform/src/.
 
-Scope for this session: step 3 of the port order — waveform.cpp, the block walk and gradient
-expansion (../seq2waveform/crates/seq2waveform/src/waveform.rs).
+Scope for this session: step 4 of the port order — sample.cpp, the Sampler and k-space
+(../seq2waveform/crates/seq2waveform/src/sample.rs). It also unblocks the h5 comparison that step 3
+could not do, so finish by checking the ported gradients against the reference h5 at 1e-4.
 
 Rules:
 - The Rust crate is the oracle, not a sketch. Port semantics line-for-line; where you deviate, say
