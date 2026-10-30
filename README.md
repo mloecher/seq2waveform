@@ -89,8 +89,11 @@ nothing was checked.
 `.github/workflows/ci.yml` runs on every push: the C++ core and its ctest suites on gcc, clang
 (both macOS architectures) and MSVC, the bindings compiled and installed on all three platforms,
 and the sdist checked to build from source alone. `wheels.yml` builds the full matrix — CPython
-3.10-3.14 on Linux x86_64, macOS x86_64 and arm64, Windows x64, each architecture on its own
-native runner — on a `v*` tag or on demand from the Actions tab.
+3.10-3.14 plus 3.14 free-threaded, on Linux x86_64, macOS x86_64 and arm64, Windows x64, each
+architecture on its own native runner — on a `v*` tag or on demand from the Actions tab.
+
+The extension declares that it does not need the GIL, so a free-threaded interpreter keeps it
+disabled; PORTING.md's *Free-threaded Python* records what was audited to support that.
 
 CI has no corpus, so only the tests marked `no_corpus` run there; everything that reads a dataset
 skips. **A green CI run does not stand in for `pixi run test` on a machine that has the corpus.**

@@ -1,8 +1,8 @@
-# The full wheel matrix: CPython 3.10-3.14 on Linux x86_64, macOS (both architectures) and
-# Windows x64. See `[tool.cibuildwheel]` in pyproject.toml for the build selection, the skips and
+# The full wheel matrix: CPython 3.10-3.14 plus 3.14 free-threaded, on Linux x86_64, macOS (both
+# architectures) and Windows x64. See `[tool.cibuildwheel]` in pyproject.toml for the build selection, the skips and
 # the per-architecture macOS deployment targets.
 #
-# Not on every push, deliberately. It is five builds per platform and takes tens of minutes, while
+# Not on every push, deliberately. It is six builds per platform and takes tens of minutes, while
 # `core` and `package` in ci.yml already compile the core and the bindings on all four toolchains
 # within a few minutes of a commit. Run this from the Actions tab when the matrix itself is what
 # you want to check -- which includes the first time this is pushed, since no non-Windows compiler
@@ -36,10 +36,41 @@ env:
   FORCE_COLOR: 3
 
 jobs:
+  version:
+    # Taken from gropt's build-and-publish.yml, which has this and this did not. The wheel build
+    # triggers on a `v*` tag but takes its version from pyproject.toml, so tagging v0.2.0 without
+    # bumping the file produces a full matrix of wheels labelled 0.1.0 -- and nothing downstream
+    # would notice, because a wheel's filename is simply what the metadata said.
+    name: tag matches pyproject
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Compare
+        run: >
+          python -c "import os, tomllib;
+          tag = os.environ['GITHUB_REF_NAME'].removeprefix('v');
+          got = tomllib.load(open('pyproject.toml','rb'))['project']['version'];
+          print(f'tag {tag!r}, pyproject {got!r}');
+          raise SystemExit(0 if tag == got else
+          f'tag v{tag} does not match pyproject.toml version {got}: bump one of them')"
+
   wheels:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # Runs after the version check on a tag, and on its own otherwise: `always()` keeps the
+    # matrix going when `version` is skipped, while still stopping on a real mismatch.
+    needs: [version]
+    if: always() && needs.version.result != 'failure'
     permissions:
       contents: read
     strategy:

@@ -87,6 +87,10 @@ jobs:
         include:
           - { os: ubuntu-latest, python: "3.10" }
           - { os: ubuntu-latest, python: "3.13" }
+          # The free-threaded interpreter. This is the only place the FREE_THREADED module build
+          # is exercised at all: on every other interpreter nanobind turns the option off, so the
+          # flag compiles to nothing and proves nothing.
+          - { os: ubuntu-latest, python: "3.14t" }
           - { os: macos-latest, python: "3.13" }
           - { os: windows-latest, python: "3.13" }
     steps:
@@ -101,6 +105,16 @@ jobs:
         # pytest-github-actions-annotate-failures puts failures on the diff in the PR view
         # instead of only in the log.
         run: python -m pip install . pytest numpy pytest-github-actions-annotate-failures
+      - name: The GIL must stay off on a free-threaded interpreter
+        # Importing a module that has not declared itself GIL-free makes CPython re-enable the
+        # GIL for the process and emit a warning. That is a silent performance cliff rather than
+        # an error, so nothing would fail without this check: it asserts the state of the switch
+        # after the import, which is the only thing that confirms FREE_THREADED took effect.
+        if: endsWith(matrix.python, 't')
+        run: >
+          python -X faulthandler -c "import sys, seq2waveform;
+          assert not sys._is_gil_enabled(), 'importing seq2waveform re-enabled the GIL';
+          print('GIL is off, free-threaded build is honoured')"
       - name: Tests that need no corpus
         run: pytest tests -m no_corpus -v
       - name: Report what skipped for want of a corpus

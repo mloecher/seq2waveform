@@ -319,11 +319,20 @@ Two workflows under `.github/workflows/`.
 | `package` (3 platforms, 3.10 and 3.13) | the bindings compile, nanobind's stub generation runs, the wheel installs, and it imports and computes from outside the source tree |
 | `sdist` | the sdist carries `extern/fast_float`, passes `twine check`, and builds and installs from source alone |
 
+The `package` matrix includes `3.14t`, the free-threaded interpreter, which is the only place the
+free-threaded module build is exercised at all — see *Free-threaded Python* below.
+
 `wheels.yml`, on a `v*` tag, from the Actions tab, or on a pull request that edits the workflow or
-`pyproject.toml`: the full cibuildwheel matrix, 25 wheels — CPython 3.10 to 3.14 on Linux x86_64,
-macOS x86_64 and arm64, and Windows x64, five per runner. It is not on every push because it takes
-tens of minutes and `core` plus `package` already catch a toolchain break; run it by hand the
-first time, since **no non-Windows compiler has ever built this code**.
+`pyproject.toml`: the full cibuildwheel matrix, 24 wheels — CPython 3.10 to 3.14 plus 3.14
+free-threaded, on Linux x86_64, macOS x86_64 and arm64, and Windows x64, six per runner. It is not
+on every push because it takes tens of minutes and `core` plus `package` already catch a toolchain
+break; run it by hand the first time, since **no non-Windows compiler has ever built this code**.
+
+On a tag, a `version` job runs first and fails if the tag does not match `project.version` in
+`pyproject.toml`. The wheel build triggers on the tag but takes its version from the file, so
+tagging `v0.2.0` without bumping it produces a full matrix of wheels labelled 0.1.0, and nothing
+downstream notices, because a wheel's version is simply whatever the metadata said. Taken from
+gropt's `build-and-publish.yml`, which had this check when these workflows did not.
 
 **Both macOS architectures are built natively**, one runner each (`macos-latest` for arm64,
 `macos-15-intel` for x86_64), rather than cross-compiling x86_64 from the Apple Silicon runner.
@@ -384,16 +393,40 @@ passing vacuously — the one guard that stops "everything skipped" from reading
   says the difference is float noise and the snapshots can be regenerated there. That fallback
   only sees the statistics and the probes, so it is for bring-up, not everyday use.
 
+### Free-threaded Python
+
+The wheels include `cp314t`, and the module declares that it does not need the GIL. Without that
+declaration a free-threaded interpreter re-enables the GIL for the whole process when it imports
+the module, and warns — a silent performance cliff rather than an error, which is why CI asserts
+`sys._is_gil_enabled()` is false after the import rather than trusting a green run.
+
+The mechanism is `FREE_THREADED` on `nanobind_add_module`, not a C++ declaration: nanobind owns
+the `Py_mod_gil` slot. (`nb::mod_gil_not_used()` does not exist — `NB_MODULE` takes two
+arguments.) nanobind sets the option to FALSE itself when the interpreter is not free-threaded, so
+it is unconditional here and compiles to nothing on a normal build. Which also means `3.14t` in
+the `package` matrix is not a nice-to-have: it is the only configuration where the flag does
+anything, so without it the free-threaded build is shipped untested.
+
+What makes the claim true, audited rather than assumed:
+
+| checked | found |
+|---|---|
+| namespace-scope mutable state in `src/`, `bindings/` | none |
+| `mutable` members | none |
+| lazily-computed or cached fields | none |
+| Python objects held in C++ | none |
+| `rv_policy` / `keep_alive` views into object-owned buffers | none; every result is freshly allocated and handed to numpy with its own capsule owner |
+| public methods on the shared types | all `const`, so two threads calling into one `Sequence`, `DsvSet` or `PiecewiseLinear` are both reading |
+| function-local statics | one, `static const DsvChannel empty` in `dsvset.cpp`; `const`, and C++11 makes the initialisation thread-safe |
+| global C state (`setlocale`, `rand`, `localtime`, `strtod`) | none — `scan.hpp` exists partly because `strtod` honours the locale |
+| `std::fprintf(stderr)` warnings | two; the C runtime locks the stream, so concurrent warnings can interleave in the text but cannot race |
+
+If any of that changes — a cache, a lazily filled field, a non-const accessor — the flag has to be
+reconsidered, and `nb::ft_mutex` is the tool for it. The audit is restated next to the flag in
+`CMakeLists.txt`, because that is where someone will be standing when it stops being true.
+
 ### What CI deliberately does not do
 
-- **No free-threaded wheels.** cibuildwheel v4 builds CPython 3.14 free-threaded without an
-  enable flag, so `cp314t` would appear on its own; the `build` selector (`cp314-*`) does not
-  match `cp314t-*`, which is why 25 identifiers come out rather than 30. Taking them would mean
-  declaring `nb::mod_gil_not_used()` in the module, since without it a free-threaded interpreter
-  re-enables the GIL at import and warns. A search for mutable globals across `src/` and
-  `bindings/` finds none — the readers and samplers hold their state in the objects they return
-  — so this looks takeable rather than hard, but it is a claim about thread safety and should be
-  made deliberately rather than inherited from a matrix.
 - **No lint or format gate.** There is no `ruff`, `black` or `pre-commit` configuration in the
   repository, so there is nothing for a lint job to run. Adding one is a policy decision with a
   one-time cleanup attached, not a CI fix.
