@@ -27,6 +27,21 @@
 
 #include <fast_float/fast_float.h>
 
+// Apple's libc++ ships only the integral half of P0067: there is no floating-point
+// std::from_chars, and the bool overload is deleted, so a double argument lands on the deleted
+// one and fails to compile. That gap is a large part of why fast_float is vendored at all, so
+// where it applies this benchmark has nothing to compare against and reports only fast_float.
+// __cpp_lib_to_chars is the feature-test macro for the floating-point half. Define the macro on
+// the command line to force either path -- that is how the fallback gets compiled on a toolchain
+// that does have std::from_chars.
+#ifndef S2W_STD_F64_FROM_CHARS
+#if defined(__cpp_lib_to_chars)
+#define S2W_STD_F64_FROM_CHARS 1
+#else
+#define S2W_STD_F64_FROM_CHARS 0
+#endif
+#endif
+
 #include "seq2waveform/parser.hpp"
 #include "seq2waveform/scan.hpp"
 
@@ -61,6 +76,9 @@ std::vector<std::string> shape_sample_tokens(const std::string& text) {
     return out;
 }
 
+constexpr bool kHaveStd = S2W_STD_F64_FROM_CHARS != 0;
+
+#if S2W_STD_F64_FROM_CHARS
 /// Parse with std::from_chars, matching parse_f64's rules (whole token, leading '+' stripped).
 bool std_parse(std::string_view s, double& out) {
     if (!s.empty() && s.front() == '+') {
@@ -70,6 +88,10 @@ bool std_parse(std::string_view s, double& out) {
     const std::from_chars_result r = std::from_chars(s.data(), end, out);
     return r.ec == std::errc() && r.ptr == end;
 }
+#else
+/// Stands in so the call sites still compile; every one of them is behind `if constexpr`.
+bool std_parse(std::string_view, double&) { return false; }
+#endif
 
 /// The same, through fast_float. Identical contract: no whitespace skipping, no leading '+'.
 bool ff_parse(std::string_view s, double& out) {
@@ -117,13 +139,19 @@ void report_out_of_range() {
         const std::string_view s(c);
         const char* end = s.data() + s.size();
 
-        double a = 12345.0;
-        const std::from_chars_result ra = std::from_chars(s.data(), end, a);
         double b = 12345.0;
         const fast_float::from_chars_result rb = fast_float::from_chars(s.data(), end, b);
 
+#if S2W_STD_F64_FROM_CHARS
+        double a = 12345.0;
+        const std::from_chars_result ra = std::from_chars(s.data(), end, a);
         std::printf("  %-8s std: ec=%-2d value=%-24.17g | fast_float: ec=%-2d value=%.17g\n", c,
                     static_cast<int>(ra.ec), a, static_cast<int>(rb.ec), b);
+#else
+        std::printf("  %-8s std: unavailable                      | fast_float: ec=%-2d "
+                    "value=%.17g\n",
+                    c, static_cast<int>(rb.ec), b);
+#endif
     }
     std::printf("  (errc::result_out_of_range == %d)\n\n",
                 static_cast<int>(std::errc::result_out_of_range));
@@ -156,25 +184,30 @@ int main(int argc, char** argv) {
     // 1. Bit-identity over every token, both directions of agreement.
     std::size_t mismatches = 0;
     std::size_t disagree_ok = 0;
-    for (const std::string& tok : toks) {
-        double a = 0.0;
-        double b = 0.0;
-        const bool oka = std_parse(tok, a);
-        const bool okb = ff_parse(tok, b);
-        if (oka != okb) {
-            ++disagree_ok;
-        } else if (oka && !same_bits(a, b)) {
-            if (mismatches < 3) {
-                std::printf("  MISMATCH on \"%s\": %.17g vs %.17g\n", tok.c_str(), a, b);
+    if constexpr (kHaveStd) {
+        for (const std::string& tok : toks) {
+            double a = 0.0;
+            double b = 0.0;
+            const bool oka = std_parse(tok, a);
+            const bool okb = ff_parse(tok, b);
+            if (oka != okb) {
+                ++disagree_ok;
+            } else if (oka && !same_bits(a, b)) {
+                if (mismatches < 3) {
+                    std::printf("  MISMATCH on \"%s\": %.17g vs %.17g\n", tok.c_str(), a, b);
+                }
+                ++mismatches;
             }
-            ++mismatches;
         }
     }
 
     // 2. Throughput on those tokens, and the whole-file parse for scale.
     double sum_std = 0.0;
     double sum_ff = 0.0;
-    const double ms_std = time_parser(std_parse, toks, reps, sum_std);
+    double ms_std = 0.0;
+    if constexpr (kHaveStd) {
+        ms_std = time_parser(std_parse, toks, reps, sum_std);
+    }
     const double ms_ff = time_parser(ff_parse, toks, reps, sum_ff);
 
     // parse_text, not parse(istream): the file is already in memory, so this times the parser
@@ -189,25 +222,34 @@ int main(int argc, char** argv) {
     }
 
     const double n = static_cast<double>(toks.size());
+    char std_col[64];
+    if constexpr (kHaveStd) {
+        std::snprintf(std_col, sizeof(std_col), "%8.2f ms (%5.1f ns/tok)  %5.2fx", ms_std,
+                      ms_std * 1e6 / n, ms_std / ms_ff);
+    } else {
+        std::snprintf(std_col, sizeof(std_col), "%34s", "unavailable in this libc++");
+    }
     std::printf(
-        "%-12s %9zu tok  %6zu blk | from_chars %8.2f ms (%5.1f ns/tok)  fast_float %8.2f ms "
-        "(%5.1f ns/tok)  %5.2fx | parse %8.2f ms, floats %4.1f%% | %s\n",
-        argv[1], toks.size(), blocks, ms_std, ms_std * 1e6 / n, ms_ff, ms_ff * 1e6 / n,
-        ms_std / ms_ff, ms_parse,
+        "%-12s %9zu tok  %6zu blk | from_chars %s  fast_float %8.2f ms "
+        "(%5.1f ns/tok) | parse %8.2f ms, floats %4.1f%% | %s\n",
+        argv[1], toks.size(), blocks, std_col, ms_ff, ms_ff * 1e6 / n, ms_parse,
         // Share of parse time spent scanning floats -- measured with fast_float, since that is
         // what the parser now uses. (It is a close estimate, not a profile: the micro-benchmark
         // covers the [SHAPES] tokens, ~95% of the floats in a large sequence.)
         100.0 * ms_ff / ms_parse,
-        (mismatches == 0 && disagree_ok == 0) ? "bit-identical" : "DIFFERS");
+        !kHaveStd ? "fast_float only"
+                  : (mismatches == 0 && disagree_ok == 0) ? "bit-identical" : "DIFFERS");
 
     if (mismatches != 0 || disagree_ok != 0) {
         std::printf("  %zu value mismatch(es), %zu accept/reject disagreement(s)\n", mismatches,
                     disagree_ok);
         return 1;
     }
-    if (!same_bits(sum_std, sum_ff)) {
-        std::printf("  checksums differ: %.17g vs %.17g\n", sum_std, sum_ff);
-        return 1;
+    if constexpr (kHaveStd) {
+        if (!same_bits(sum_std, sum_ff)) {
+            std::printf("  checksums differ: %.17g vs %.17g\n", sum_std, sum_ff);
+            return 1;
+        }
     }
     return 0;
 }
