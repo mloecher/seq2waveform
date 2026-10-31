@@ -21,7 +21,7 @@ import functools
 
 import numpy as np
 import pytest
-from conftest import TESTDATA, datasets, dsv_paths, requires_corpus, seq_path
+from conftest import SOURCES, datasets, dsv_paths, requires_corpus, seq_path
 
 import seq2waveform as s2w
 
@@ -183,11 +183,11 @@ def test_nd_time_arrays_keep_their_shape(name):
 
 
 def _dsv_channels():
-    if not TESTDATA.is_dir():
-        return []
     return sorted(
         f
-        for d in TESTDATA.iterdir()
+        for root in SOURCES
+        if root.is_dir()
+        for d in root.iterdir()
         if d.is_dir() and (d / "dsv").is_dir()
         for f in (d / "dsv").glob("*.dsv")
         if not f.name.endswith("_INF.dsv")  # not a waveform channel

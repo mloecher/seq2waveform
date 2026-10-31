@@ -32,7 +32,7 @@ import functools
 
 import numpy as np
 import pytest
-from conftest import TESTDATA, datasets, requires_corpus, seq_path
+from conftest import datasets, dsv_dir, h5_path, requires_corpus, seq_path
 
 import seq2waveform as s2w
 
@@ -67,7 +67,7 @@ def test_gradients_match_h5(name):
     onto the h5 times (`left`/`right` are 0: outside the channel the gradient is at rest).
     """
     seq = _seq(name)
-    with h5py.File(TESTDATA / name / f"{name}.h5") as f:
+    with h5py.File(h5_path(name)) as f:
         axes = [ax for ax in "xyz" if f"g{ax}" in f]
         truth = {ax: _orient(f[f"g{ax}"][()], 2) for ax in axes}
     assert axes, f"{name}: the h5 has no gradient datasets"
@@ -90,7 +90,7 @@ def test_excitation_times_match_h5(name):
     exc = np.sort(
         np.array([c for c, _, _, u in seq.rf_events() if u in ("excitation", "undefined")])
     )
-    with h5py.File(TESTDATA / name / f"{name}.h5") as f:
+    with h5py.File(h5_path(name)) as f:
         truth = np.sort(_orient(f["excitation"][()], 3)[:, 0]) if "excitation" in f else np.array([])
     assert exc.size == truth.size, f"{name}: {exc.size} excitations vs h5 {truth.size}"
     if exc.size:
@@ -101,7 +101,7 @@ def test_adc_times_match_h5(name):
     """ADC sample times match the h5's `/adc`."""
     seq = _seq(name)
     st = np.sort(seq.adc_times())
-    with h5py.File(TESTDATA / name / f"{name}.h5") as f:
+    with h5py.File(h5_path(name)) as f:
         ht = np.sort(_orient(f["adc"][()], 4)[:, 0]) if "adc" in f else np.array([])
     assert st.size == ht.size, f"{name}: {st.size} ADC samples vs h5 {ht.size}"
     if st.size:
@@ -124,8 +124,8 @@ def test_dsv_gradients_match_h5(name):
     Pulseq's `restoreAdditionalShapeSamples`, which is reconstruction detail Siemens never had, so
     comparing there would hold the scanner to a resolution it was never given.
     """
-    dsv = TESTDATA / name / "dsv"
-    if not dsv.is_dir():
+    dsv = dsv_dir(name)
+    if dsv is None:
         pytest.skip("dataset has no dsv/ folder")
     inf = sorted(dsv.glob("*_INF.dsv"))
     if not inf:
@@ -134,7 +134,7 @@ def test_dsv_gradients_match_h5(name):
     lead = s2w.inf_lead_in(str(inf[0]))  # seconds
     assert 0.9e-3 < lead < 1.2e-3, f"{name}: unexpected lead-in {lead * 1e6:.1f} us"
 
-    with h5py.File(TESTDATA / name / f"{name}.h5") as f:
+    with h5py.File(h5_path(name)) as f:
         axes = [ax for ax in "xyz" if f"g{ax}" in f]
         truth = {ax: _orient(f[f"g{ax}"][()], 2) for ax in axes}
 

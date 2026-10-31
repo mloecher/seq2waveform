@@ -52,9 +52,14 @@ this library's arithmetic — run it after changing a waveform. `test-golden` di
 columns per dataset against `tests/golden/*.json`; regenerate those with `pixi run golden-update`
 only when the change is intended, and read the diff.
 
-The corpus is matched `.seq` / `.h5` / `.dsv` files, ~1.6 GB, so it lives outside the repo.
-`tests/conftest.py` looks for `S2W_TESTDATA`, then `./testdata`, then `../seq2waveform/testdata`.
-A run that reports *skipped* found no corpus and checked nothing.
+Two datasets live in `tests/data` — a `.seq` and its Pulseq `.h5` — so a fresh clone checks real
+numbers instead of skipping. They carry no DSV export: those files are a vendor simulator's output,
+and `test_dsv.cpp` covers that reader from a minimal file written to the format instead.
 
-CI builds the core and the bindings on gcc, clang and MSVC. It has no corpus, so a green run is no
+The full corpus is matched `.seq` / `.h5` / `.dsv` files, ~1.6 GB, so it lives outside the repo.
+`tests/conftest.py` looks for `S2W_TESTDATA`, then `./testdata`, then `../seq2waveform/testdata`,
+and prefers it over the bundled copy for a dataset in both.
+
+CI builds the core and the bindings on gcc, clang and MSVC, and runs everything the bundled data
+answers for — including the `.h5` comparison. The DSV half still skips there, so a green run is no
 substitute for `pixi run test`.

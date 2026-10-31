@@ -35,6 +35,20 @@ def write(name: str) -> tuple[int, int, float]:
     elapsed = time.perf_counter() - t0
     GOLDEN_DIR.mkdir(exist_ok=True)
     path = GOLDEN_DIR / f"{name}.json"
+
+    # Refuse to shrink a snapshot. `epi` and `sync_osc` are also bundled in `tests/data` without a
+    # DSV export, so regenerating either on a machine that has no corpus would drop the 57 reader
+    # columns -- and leave a snapshot the suite still passes, pinning less than it says.
+    if path.is_file():
+        had = len(json.loads(path.read_text(encoding="utf-8")))
+        if len(snap) < had:
+            raise SystemExit(
+                f"{path.name} pins {had} columns and this run produced only {len(snap)}: no DSV "
+                f"export was found for {name}, so writing it would stop pinning what the DSV and "
+                f"INF readers cover. Regenerate with the full corpus, or delete the file first to "
+                f"accept the smaller snapshot deliberately."
+            )
+
     # sort_keys and a trailing newline so a regenerated file diffs line-by-line against the old.
     text = json.dumps(snap, indent=1, sort_keys=True) + "\n"
     path.write_text(text, encoding="utf-8")

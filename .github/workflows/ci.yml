@@ -1,9 +1,13 @@
-# The C++ core on four toolchains, the bindings on each platform, and the tests that need no
-# corpus. The corpus is ~1.6 GB and lives nowhere near a runner, so test-h5, test-invariants and
-# the per-dataset half of test-golden all skip here -- a green run is NOT a green `pixi run test`.
-# `-m no_corpus` is what stops that from becoming a silent no-op: pytest exits 5 on a selection
-# that matches nothing. The committed stub is checked by `pixi run check-stub` instead, where
-# pixi.lock pins the nanobind that writes it.
+# The C++ core on four toolchains, the bindings on each platform, and everything the repo's own
+# data can answer for. `tests/data/` carries two datasets -- a `.seq` and its Pulseq `.h5`, no DSV
+# -- so the golden comparison and `test_h5.py`, the only test here that does not depend on our own
+# arithmetic, run on every toolchain rather than only on a machine with the corpus.
+#
+# What still skips is the DSV half: those files are a vendor simulator's output and stay out of a
+# public repo, so a green run is still not a green `pixi run test`, which has the full ~1.6 GB
+# corpus. `tests/test_datasets.py` is what stops a run of nothing but skips from passing as a
+# checked one. The committed stub is checked by `pixi run check-stub` instead, where pixi.lock
+# pins the nanobind that writes it.
 
 name: CI
 
@@ -87,11 +91,17 @@ jobs:
           python -X faulthandler -c "import sys, seq2waveform;
           assert not sys._is_gil_enabled(), 'importing seq2waveform re-enabled the GIL';
           print('GIL is off, free-threaded build is honoured')"
-      - name: Tests that need no corpus
-        run: pytest tests -m no_corpus -v
-      - name: Report what skipped for want of a corpus
-        continue-on-error: true   # informational: prints which checks did not run
-        run: pytest tests -m "not no_corpus" -rs -q
+      - name: h5py, for the Pulseq reference comparison
+        # test_h5.py importorskips h5py, so a missing one costs a silent skip rather than an
+        # error. Hence a hard install here and no free-threaded build: h5py has no cp314t wheel,
+        # and that job is about the GIL switch, not about the reference datasets.
+        if: ${{ !endsWith(matrix.python, 't') }}
+        run: python -m pip install h5py
+      - name: Tests
+        # The whole suite, not `-m no_corpus`: tests/data/ makes the golden comparison and the h5
+        # check runnable here, and they are only worth carrying if a failure fails the job. `-rs`
+        # lists what skipped anyway -- the DSV halves, and test_h5 on 3.14t.
+        run: pytest tests -rs -v
       - name: Import and compute from outside the source tree
         # Elsewhere, so this is the installed package and not the repo's own seq2waveform/.
         working-directory: ${{ runner.temp }}

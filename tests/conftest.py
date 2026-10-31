@@ -1,9 +1,10 @@
-"""Shared test-corpus discovery.
+"""Shared test-dataset discovery, over two sources.
 
-The corpus is matched `.seq` / `.h5` / `.dsv` files, one directory per dataset, ~1.6 GB. It is
-gitignored and lives outside the repo, so where it is has to be discovered rather than assumed.
+A dataset is a directory holding `<name>.seq` and, depending on the source, `<name>.h5` and a
+`dsv/` export.
 
-Resolution order, first hit wins:
+**The corpus** is the full set, ~1.6 GB, and lives outside the repo, so where it is has to be
+discovered rather than assumed. Resolution order, first hit wins:
 
 1. ``S2W_TESTDATA``, if set (relative values resolve against the project root, not the cwd).
 2. ``testdata/`` in this repo.
@@ -11,7 +12,18 @@ Resolution order, first hit wins:
    replaced it. Kept as a fallback so a checkout that has not moved the corpus yet still runs;
    drop this once the Rust repo is gone.
 
-A run that reports *skipped* found no corpus. That is not a pass -- it means nothing was checked.
+**The bundled set** is `tests/data/`: two datasets committed to the repo, so a fresh clone and a
+CI runner check real numbers instead of skipping everything. It carries the `.seq` and the Pulseq
+`.h5` -- which is what makes `test_h5.py`, the only outside answer in the suite, run anywhere --
+but no DSV export. Those files are a vendor simulator's output and stay out of a public repo;
+`test_dsv.cpp` and `test_inf.cpp` cover those readers from minimal files written to the format.
+
+The corpus wins for a name both sources hold, since it also has the DSV export. So the bundled
+files change nothing about a run that has the corpus.
+
+A run that reports *skipped* checked less than it looks like, which is what `test_datasets.py`
+is for: it asserts the bundled set was found, so a skip there is a resolution bug and not a
+missing corpus.
 """
 
 import os
@@ -42,9 +54,38 @@ def _find_testdata() -> Path:
 
 TESTDATA = _find_testdata()
 
+#: The datasets committed to the repo. Searched after the corpus; see the module docstring.
+BUNDLED = PROJECT_ROOT / "tests" / "data"
+
+#: Both sources, in the order a dataset name is looked up.
+SOURCES = (TESTDATA, BUNDLED)
+
+
+def _holds(root: Path, name: str, suffixes) -> bool:
+    d = root / name
+    return d.is_dir() and all((d / f"{name}{sfx}").exists() for sfx in suffixes)
+
+
+def dataset_root(name: str, *required_suffixes: str) -> Path | None:
+    """Which source holds `name`, corpus first, or None if neither does.
+
+    Parameters
+    ----------
+    name : str
+        Dataset name.
+    *required_suffixes : str
+        Extensions the directory must contain as `<name><suffix>`. Defaults to ``".seq"``.
+
+    Returns
+    -------
+    Path or None
+    """
+    want = required_suffixes or (".seq",)
+    return next((root for root in SOURCES if _holds(root, name, want)), None)
+
 
 def datasets(*required_suffixes: str) -> list[str]:
-    """Dataset names under the corpus that have every one of `required_suffixes`.
+    """Dataset names, from either source, that have every one of `required_suffixes`.
 
     Parameters
     ----------
@@ -55,32 +96,40 @@ def datasets(*required_suffixes: str) -> list[str]:
     Returns
     -------
     list of str
-        Sorted dataset names, empty if the corpus is missing.
+        Sorted dataset names, empty if neither source has a match.
     """
-    if not TESTDATA.is_dir():
-        return []
     want = required_suffixes or (".seq",)
-    return sorted(
-        d.name
-        for d in TESTDATA.iterdir()
-        if d.is_dir() and all((d / f"{d.name}{sfx}").exists() for sfx in want)
-    )
+    found: set[str] = set()
+    for root in SOURCES:
+        if root.is_dir():
+            found |= {d.name for d in root.iterdir() if _holds(root, d.name, want)}
+    return sorted(found)
 
 
 def seq_path(name: str) -> str:
     """The `.seq` path for a dataset name."""
-    return str(TESTDATA / name / f"{name}.seq")
+    return str((dataset_root(name) or TESTDATA) / name / f"{name}.seq")
+
+
+def h5_path(name: str) -> Path:
+    """The Pulseq reference `.h5` path for a dataset name."""
+    return (dataset_root(name, ".seq", ".h5") or TESTDATA) / name / f"{name}.h5"
 
 
 def dsv_paths(name: str):
     """The five DSV/INF paths a `DsvSet` needs, or None if the dataset lacks any of them.
+
+    A bundled dataset never has them; see the module docstring.
 
     Returns
     -------
     tuple of str, or None
         ``(grx, gry, grz, rfd, inf)``.
     """
-    d = TESTDATA / name / "dsv"
+    root = dataset_root(name)
+    if root is None:
+        return None
+    d = root / name / "dsv"
     if not d.is_dir():
         return None
     out = []
@@ -92,8 +141,15 @@ def dsv_paths(name: str):
     return tuple(out)
 
 
+def dsv_dir(name: str) -> Path | None:
+    """The dataset's `dsv/` directory, or None if it has no export."""
+    paths = dsv_paths(name)
+    return None if paths is None else Path(paths[0]).parent
+
+
 def requires_corpus(names) -> pytest.MarkDecorator:
     """Skip marker for a module whose datasets list came back empty."""
     return pytest.mark.skipif(
-        not names, reason=f"no matching datasets under {TESTDATA} (set S2W_TESTDATA)"
+        not names,
+        reason=f"no matching datasets in {TESTDATA} (set S2W_TESTDATA) or {BUNDLED}",
     )

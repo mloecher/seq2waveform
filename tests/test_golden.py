@@ -27,7 +27,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from conftest import TESTDATA, datasets, dsv_paths, seq_path
+from conftest import BUNDLED, TESTDATA, datasets, dsv_paths, seq_path
 from golden import compare, digest, snapshot
 
 GOLDEN_DIR = pathlib.Path(__file__).resolve().parent / "golden"
@@ -39,6 +39,7 @@ GOLDEN_DIR = pathlib.Path(__file__).resolve().parent / "golden"
 ACCEPT_RTOL = float(os.environ["S2W_GOLDEN_RTOL"]) if "S2W_GOLDEN_RTOL" in os.environ else None
 
 COMMITTED = sorted(p.stem for p in GOLDEN_DIR.glob("*.json")) if GOLDEN_DIR.is_dir() else []
+#: Every dataset either source holds, so a bundled one is compared on its `seq.*` columns.
 CORPUS = datasets(".seq")
 ALL_NAMES = sorted(set(COMMITTED) | set(CORPUS))
 
@@ -51,26 +52,37 @@ def test_output_matches_the_committed_snapshot(name):
     helper changes, the set of columns that moved is the diagnosis.
     """
     if name not in CORPUS:
-        pytest.skip(f"{name} has a snapshot but is not in the corpus at {TESTDATA}")
+        pytest.skip(f"{name} has a snapshot but is in neither {TESTDATA} nor {BUNDLED}")
     path = GOLDEN_DIR / f"{name}.json"
     if not path.is_file():
         pytest.skip(f"{name} is in the corpus but has no snapshot; run `pixi run golden-update`")
 
     want = json.loads(path.read_text(encoding="utf-8"))
-    got = snapshot(seq_path(name), dsv_paths(name))
+    dsv = dsv_paths(name)
+    got = snapshot(seq_path(name), dsv)
+
+    # A bundled dataset is the `.seq` and its `.h5` only -- no DSV export, so the reader columns
+    # cannot be produced and their absence is not a regression. Everything else still must be:
+    # `startswith(())` is always False, so a dataset that does have the export is unaffected.
+    excused = ("dsv.", "inf.", "dsvset.") if dsv is None else ()
 
     problems = []
     for key in sorted(set(want) - set(got)):
-        problems.append(f"{key}: in the snapshot but no longer produced")
+        if not key.startswith(excused):
+            problems.append(f"{key}: in the snapshot but no longer produced")
     for key in sorted(set(got) - set(want)):
         problems.append(f"{key}: produced but not in the snapshot (run `pixi run golden-update`)")
-    for key in sorted(set(got) & set(want)):
+    shared = sorted(set(got) & set(want))
+    for key in shared:
         bad = compare(key, got[key], want[key], accept_rtol=ACCEPT_RTOL)
         if bad:
             problems.append(bad)
 
-    assert not problems, f"{len(problems)} of {len(want)} columns differ for {name}:\n" + "\n".join(
-        "  " + p for p in problems
+    # `len(shared)`, not `len(want)`: on a bundled dataset most of the snapshot is not in play,
+    # and a denominator that says otherwise overstates what a pass covered.
+    assert not problems, (
+        f"{len(problems)} of {len(shared)} compared columns differ for {name}:\n"
+        + "\n".join("  " + p for p in problems)
     )
 
 
@@ -103,7 +115,7 @@ def test_each_gradient_mode_differs_from_pulseq_somewhere(mode):
     )
 
 
-@pytest.mark.skipif(not CORPUS, reason=f"no corpus under {TESTDATA}")
+@pytest.mark.skipif(not CORPUS, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 def test_every_corpus_dataset_has_a_snapshot():
     """A dataset with no snapshot is unchecked, and a skip is easy to miss in a long run."""
     missing = [n for n in CORPUS if n not in COMMITTED]

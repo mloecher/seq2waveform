@@ -4,3 +4,8 @@
 # carries shell heredocs a stray CR would break. Pin both rather than trust core.autocrlf.
 *.pyi text eol=lf
 *.yml text eol=lf
+
+# The committed test inputs under tests/data. Byte-exact both ways: the .h5 is binary, and
+# tests/test_datasets.py compares the .seq against the corpus copy byte for byte, which any
+# line-ending normalisation on checkout would break.
+tests/data/** -text

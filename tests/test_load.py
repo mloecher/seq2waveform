@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 import seq2waveform as s2w
-from conftest import TESTDATA, datasets, dsv_paths, seq_path
+from conftest import BUNDLED, TESTDATA, datasets, dsv_dir, dsv_paths, seq_path
 
 PREFIX = "SimulationProtocol"
 #: Everything a real Siemens export holds beyond the five channels that matter here.
@@ -143,7 +143,7 @@ def test_mode_dsv_is_accepted_for_a_dsv_export(tmp_path):
 SEQ_NAMES = datasets(".seq")
 
 
-@pytest.mark.skipif(not SEQ_NAMES, reason=f"no corpus under {TESTDATA}")
+@pytest.mark.skipif(not SEQ_NAMES, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 @pytest.mark.parametrize("name", SEQ_NAMES)
 def test_load_defaults_a_seq_to_dsv_mode(name):
     """The whole point of `load`: the default is the mode the two sources share."""
@@ -157,13 +157,13 @@ def test_load_defaults_a_seq_to_dsv_mode(name):
         assert all(np.array_equal(np.asarray(a), np.asarray(b)) for a, b in zip(got, want))
 
 
-@pytest.mark.skipif(not SEQ_NAMES, reason=f"no corpus under {TESTDATA}")
+@pytest.mark.skipif(not SEQ_NAMES, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 @pytest.mark.parametrize("name", SEQ_NAMES)
 def test_load_opens_a_real_dsv_export_from_the_directory(name):
     paths = dsv_paths(name)
     if paths is None:
         pytest.skip(f"{name} has no DSV export")
-    directory = str(TESTDATA / name / "dsv")
+    directory = str(dsv_dir(name))
     wf = s2w.load(directory)
     assert isinstance(wf, s2w.DsvSet)
     assert wf.gamma == s2w.SCAN_GAMMA
@@ -173,13 +173,13 @@ def test_load_opens_a_real_dsv_export_from_the_directory(name):
     assert wf.duration == s2w.DsvSet(*paths).duration
 
 
-@pytest.mark.skipif(not SEQ_NAMES, reason=f"no corpus under {TESTDATA}")
+@pytest.mark.skipif(not SEQ_NAMES, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 def test_both_sources_answer_the_shared_surface(request):
     """What `load` is for: callers need not know which kind they were handed."""
     name = next((n for n in SEQ_NAMES if dsv_paths(n) is not None), None)
     if name is None:
         pytest.skip("no dataset has both a .seq and a DSV export")
-    for src in (seq_path(name), str(TESTDATA / name / "dsv")):
+    for src in (seq_path(name), str(dsv_dir(name))):
         wf = s2w.load(src)
         assert wf.duration > 0.0
         t, v = wf.gradient("z")
