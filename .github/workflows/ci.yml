@@ -82,6 +82,7 @@ jobs:
         # A module that hasn't declared itself GIL-free makes CPython re-enable the GIL and warn.
         # That's a silent performance cliff, not an error, so assert the switch directly.
         if: endsWith(matrix.python, 't')
+        working-directory: ${{ runner.temp }}   # the installed package, not the repo's own
         run: >
           python -X faulthandler -c "import sys, seq2waveform;
           assert not sys._is_gil_enabled(), 'importing seq2waveform re-enabled the GIL';
