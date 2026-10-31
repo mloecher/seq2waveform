@@ -134,7 +134,8 @@ jobs:
           python - <<'EOF'
           import glob, tarfile
           names = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
-          for need in ("extern/fast_float/fast_float.h", "CMakeLists.txt", "src/waveform.cpp"):
+          for need in ("extern/fast_float/fast_float.h", "CMakeLists.txt", "src/waveform.cpp",
+                       "tests/data/sync_osc/sync_osc.h5"):
               assert any(n.endswith(need) for n in names), f"sdist is missing {need}"
           print(f"{len(names)} files, vendored fast_float present")
           EOF
