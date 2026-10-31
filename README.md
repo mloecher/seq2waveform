@@ -27,7 +27,7 @@ Pulseq's own `waveforms_and_times()`.
 Times are int64 picoseconds internally, so a delay sweep is bit-exact wherever it lands in the
 sequence. Values are float64.
 
-[USAGE.md](USAGE.md) covers the rest of the API.
+[USAGE.md](https://github.com/mloecher/seq2waveform/blob/main/USAGE.md) covers the rest of the API.
 
 ## Install
 
@@ -38,7 +38,7 @@ pixi run conda-build    # wraps that wheel into a local conda channel under outp
 ```
 
 Needs Visual Studio on Windows; `cmake` and `nanobind` come from pixi. The one dependency,
-[fast_float](extern/fast_float/README.md), is vendored, so wheels, the sdist and the conda recipe
+[fast_float](https://github.com/mloecher/seq2waveform/blob/main/extern/fast_float/README.md), is vendored, so wheels, the sdist and the conda recipe
 build offline.
 
 ## Test

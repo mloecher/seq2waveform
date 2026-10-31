@@ -1,10 +1,17 @@
 [project]
 name = "seq2waveform"
 version = "0.1.0"
-description = "Read Pulseq .seq and Siemens .dsv files into waveform arrays, with k-space sampling."
+description = "Read Pulseq .seq and DSV files into waveform arrays, with k-space sampling."
+# The PyPI long description. A version's metadata is frozen once uploaded, so this is the page
+# that release carries for good.
+readme = "README.md"
 # No upper bound: nanobind tracks new CPython releases, which is half the point of the port.
 requires-python = ">=3.10"
 dependencies = ["numpy"]
+
+[project.urls]
+Source = "https://github.com/mloecher/seq2waveform"
+Issues = "https://github.com/mloecher/seq2waveform/issues"
 
 [build-system]
 # Bounded above because a nanobind major is a migration, not a free upgrade: it owns the

@@ -13,6 +13,12 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # Publishing hangs off this, not off the tag: a tag builds the matrix so it can be looked at,
+  # and the upload stays a separate act. Note that a release published on an existing tag shares
+  # its ref, so the concurrency group below cancels the tag's own run -- which is what you want,
+  # since the release run rebuilds everything it is about to upload.
+  release:
+    types: [published]
   pull_request:
     paths: [".github/workflows/wheels.yml", "pyproject.toml"]
 
@@ -99,6 +105,61 @@ jobs:
           name: wheels-all
           path: wheelhouse/*.whl
 
-  # No publish job: this installs from a local conda channel (`pixi run conda-build`), not PyPI.
-  # If that changes: gate on a release, add environment: pypi with id-token/attestations write,
-  # and use trusted publishing rather than a token.
+  sdist:
+    # PyPI wants the source distribution as well: it is what builds on a platform the matrix above
+    # has no wheel for. ci.yml also builds one, on every push, with the stricter checks on what it
+    # contains -- but artifacts do not cross workflows, so the release path builds its own.
+    name: sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [version]
+    if: always() && needs.version.result != 'failure'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build
+        run: pipx run build --sdist
+      - name: Check the metadata
+        # readme_renderer, the same renderer PyPI uses, so a long description that will not render
+        # fails here rather than landing on a page nobody can fix.
+        run: pipx run twine check dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    # Trusted publishing: PyPI authenticates this workflow over OIDC, so there is no token here
+    # and none in the repository's secrets. It requires a publisher on PyPI naming this repo, this
+    # file (`wheels.yml`) and the `pypi` environment below -- change any of the three and the
+    # upload is rejected.
+    #
+    # The one step in either workflow that cannot be undone: a PyPI version is immutable, and its
+    # filenames can never be reused even after a delete. Hence the release gate, and hence taking
+    # the collected artifact rather than rebuilding -- these are the files the matrix already
+    # produced and reported on.
+    name: publish to PyPI
+    needs: [collect, sdist]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/seq2waveform
+    permissions:
+      id-token: write   # the OIDC token, and the whole of what this needs
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-all
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
+      - name: What is about to be uploaded, permanently
+        run: ls -lh dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
