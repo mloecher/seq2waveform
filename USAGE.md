@@ -11,7 +11,7 @@ import seq2waveform as s2w
 
 Every call is some combination of three choices.
 
-1. **A source.** A Pulseq `.seq` file (`Sequence`) or a Siemens DSV export (`DsvSet`). They expose
+1. **A source.** A Pulseq `.seq` file (`Sequence`) or a DSV export (`DsvSet`). They expose
    the same 17 methods, so everything below works the same on either.
 2. **A quantity.** Gradients (Hz/m), or k-space (1/m, the time integral of the gradient from some
    reference time).
@@ -119,9 +119,9 @@ Only on `Sequence`, because it is about reconstructing a `.seq`'s shape lists.
 
 | mode | what it does |
 |---|---|
-| `"pulseq"` (current default) | edge reconstruction; matches Pulseq's own reference `.h5`. Can staircase on fast waveforms. |
+| `"pulseq"` (current default) | edge reconstruction; matches Pulseq's own `waveforms_and_times()`. Can staircase on fast waveforms. |
 | `"centers"` | connects the center samples of *arbitrary* shapes; trapezoids stay sharp. |
-| `"dsv"` | resamples the whole channel onto raster centers: rounds trapezoid corners **and** smooths arbitrary shapes. This is the Siemens DSV / commanded waveform. |
+| `"dsv"` | resamples the whole channel onto raster centers: rounds trapezoid corners **and** smooths arbitrary shapes. This is the commanded waveform, which is what a DSV export holds. |
 
 Measured across the test corpus, comparing each mode's gradient against `pulseq`:
 
@@ -138,11 +138,11 @@ diverges everywhere**, because rounding trapezoid corners affects every sequence
 
 ### For GIRF work: use `"dsv"`, always
 
-The point of `dsv` mode is that it is *the representation the two sources share*. A Siemens
-sequence gives you only a DSV export; a Pulseq sequence gives you a `.seq` (and you could simulate
-a DSV, but reading the `.seq` is far easier). Loading the `.seq` in `dsv` mode puts both routes
-into the same commanded-waveform representation, so the measurement you build on top does not
-depend on which kind of sequence it came from.
+The point of `dsv` mode is that it is *the representation the two sources share*. A sequence
+built on the scanner gives you only a DSV export; a Pulseq sequence gives you a `.seq` (and you
+could simulate a DSV, but reading the `.seq` is far easier). Loading the `.seq` in `dsv` mode puts
+both routes into the same commanded-waveform representation, so the measurement you build on top
+does not depend on which kind of sequence it came from.
 
 Reading a `.seq` in the default `pulseq` mode and comparing it against a real DSV compares two
 different representations of the same waveform, and the table above is the size of that difference.
@@ -163,7 +163,7 @@ seq = s2w.Sequence("scan.seq", gradient_mode="dsv")   # or name the class yourse
 dsv = s2w.DsvSet(grx, gry, grz, rfd, inf)             # five paths; gamma defaults to SCAN_GAMMA
 ```
 
-A Siemens export is five files per scan, conventionally `*_GRX.dsv`, `*_GRY.dsv`, `*_GRZ.dsv`,
+A DSV export is five files per scan, conventionally `*_GRX.dsv`, `*_GRY.dsv`, `*_GRZ.dsv`,
 `*_RFD.dsv` and `*_INF.dsv` in one directory, alongside a dozen other channels (`_ADC`, `_CON`,
 `_M0X`, ...) that are ignored. `load` finds the five by suffix, case-insensitively; point it at
 the directory, or at any one of the files when a directory holds more than one export. A `.seq`

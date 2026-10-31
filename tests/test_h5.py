@@ -2,16 +2,28 @@
 
 Run:  pixi run test-h5
 
-This is the suite that does not depend on our own arithmetic being right. The `.h5` is written by
-Pulseq itself, from the same `.seq`, so it is an outside answer -- which is why it is the one to
-run after touching a waveform, and why it survived the cut-over from the port's differential suite
-unchanged. It is a tolerance comparison (1e-4 relative), not an exact one: Pulseq and this library
-are independent implementations, not bit-compatible.
+This is the suite that does not depend on our own arithmetic being right. The `.h5` is a dump of
+Pulseq's own `waveforms_and_times()` -- `mr.Sequence.waveforms_and_times`, which in Pulseq 1.5.1
+lives in `matlab/+mr/@Sequence/Sequence.m` -- run on the same `.seq`. That makes it an outside
+answer, which is why it is the one to run after touching a waveform, and why it survived the
+cut-over from the port's differential suite unchanged.
+
+The datasets map onto that function's outputs one for one, called with `appendRF` set:
+
+    [wave_data, tfp_excitation, tfp_refocusing, t_adc, fp_adc, pm_adc] = waveforms_and_times(true)
+
+    gx, gy, gz   wave_data{1:3}, as (time_s, grad_Hz_per_m); MATLAB's 2xN, transposed
+    rf           wave_data{4}, present only because appendRF was set
+    excitation   tfp_excitation -- the "tfp" is time, freq, phase
+    adc          t_adc, fp_adc and pm_adc side by side
+
+It is a tolerance comparison (1e-4 relative), not an exact one: Pulseq and this library are
+independent implementations, not bit-compatible.
 
 `test_dsv_gradients_match_h5` is the other half of the project's actual question -- that what the
-scanner played matches what Pulseq asked for -- and is the only test here that reads the Siemens
-side. It came from the Rust repo's `scripts/test_datasets.py`, whose other three tests are the
-three above it, already present.
+scanner played matches what Pulseq asked for -- and is the only test here that reads the DSV side.
+It came from the Rust repo's `scripts/test_datasets.py`, whose other three tests are the three
+above it, already present.
 
 See `tests/conftest.py` for how the corpus is found.
 """

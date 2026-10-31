@@ -1,15 +1,14 @@
-"""seq2waveform: read Pulseq .seq and Siemens .dsv files into waveform arrays.
+"""seq2waveform: read Pulseq .seq and DSV files into waveform arrays.
 
-Two sources, one interface. ``Sequence`` reads a Pulseq ``.seq`` and expands its blocks;
-``DsvSet`` reads a Siemens measurement's ``.dsv`` channels plus its ``.inf``. Both then offer the
-same sampling and k-space API, so a Siemens set is a drop-in for a ``.seq``.
+``Sequence`` reads a Pulseq ``.seq`` and expands its blocks; ``DsvSet`` reads a measurement's
+``.dsv`` channels plus its ``.inf``. Both answer the same sampling and k-space calls, so a DSV set
+is a drop-in for a ``.seq``.
 
 Times are int64 picoseconds internally, which is what makes a delay sweep bit-exact regardless of
 where in the sequence it lands; values stay float64.
 
-``load`` is the entry point to reach for: it takes either kind of source and defaults to the
-gradient representation the two share, so code written on top of it does not know which it got.
-See USAGE.md.
+``load`` takes either kind of source and defaults to the gradient representation the two share,
+so code written on top of it does not know which it got. See USAGE.md.
 """
 
 from pathlib import Path
@@ -32,16 +31,16 @@ from ._core import (
     read_inf_sync,
 )
 
-#: The five channels a ``DsvSet`` needs, in the order its constructor takes them. A Siemens
-#: export holds many more (ADC, CON, ERR, M0X/Y/Z, ...) that are ignored here.
+#: The five channels a ``DsvSet`` needs, in the order its constructor takes them. An export
+#: holds many more (ADC, CON, ERR, M0X/Y/Z, ...) that are ignored here.
 _DSV_CHANNELS = ("GRX", "GRY", "GRZ", "RFD", "INF")
 
 
 def _dsv_index(directory):
     """Map ``NAME.DSV`` (upper-cased) -> path, for every ``.dsv`` in one directory.
 
-    Upper-cased because Siemens writes the channel suffix in capitals but a file can arrive from
-    a case-insensitive filesystem, an archive or a rename with any casing at all.
+    Upper-cased because the channel suffix is written in capitals, but a file can arrive from a
+    case-insensitive filesystem, an archive or a rename with any casing at all.
     """
     return {q.name.upper(): q for q in directory.iterdir()
             if q.is_file() and q.suffix.lower() == ".dsv"}
@@ -94,7 +93,7 @@ def _dsv_paths(src):
                       key=lambda q: q.name)
         if not hits:
             raise FileNotFoundError(
-                f"no *_GRX.dsv in {directory} -- is this a Siemens DSV export directory? "
+                f"no *_GRX.dsv in {directory} -- is this a DSV export directory? "
                 f"A Pulseq .seq has to be named directly.")
         prefixes = [q.stem.rsplit("_", 1)[0] for q in hits]
         if len(prefixes) > 1:
@@ -113,11 +112,11 @@ def _dsv_paths(src):
 
 
 def load(src, *, mode=None, gamma=None):
-    """Open a Pulseq ``.seq`` or a Siemens DSV export, in the representation they share.
+    """Open a Pulseq ``.seq`` or a DSV export, in the representation they share.
 
     A ``.seq`` is read with ``gradient_mode="dsv"`` unless told otherwise: that is the mode which
     matches what a DSV export holds, so the two sources become comparable. Pass ``mode="pulseq"``
-    when the comparison you want is against Pulseq's own reference ``.h5``.
+    when the comparison you want is against Pulseq's own ``waveforms_and_times()``.
 
     Parameters
     ----------
