@@ -52,3 +52,7 @@ tests:
 about:
   summary: Read Pulseq .seq and Siemens .dsv files into waveform arrays, with k-space sampling.
   license: MIT
+  # Both notices, as in the wheel: fast_float is compiled into the binary this package wraps.
+  license_file:
+    - LICENSE
+    - extern/fast_float/LICENSE-MIT

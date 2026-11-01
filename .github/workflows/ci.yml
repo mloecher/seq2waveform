@@ -112,7 +112,8 @@ jobs:
           print('ok, gamma =', s.SCAN_GAMMA)"
 
   sdist:
-    # Must be self-contained: fast_float is vendored so a source build needs no network.
+    # Must be self-contained: fast_float is vendored so a source build needs no network. And
+    # it must carry both licence notices, since the wheels built from it distribute fast_float.
     name: sdist
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -129,15 +130,16 @@ jobs:
         run: pipx run build --sdist
       - name: Check the metadata
         run: pipx run twine check dist/*
-      - name: It must carry the vendored sources
+      - name: It must carry the vendored sources and the licences
         run: |
           python - <<'EOF'
           import glob, tarfile
           names = tarfile.open(glob.glob("dist/*.tar.gz")[0]).getnames()
           for need in ("extern/fast_float/fast_float.h", "CMakeLists.txt", "src/waveform.cpp",
-                       "tests/data/sync_osc/sync_osc.h5"):
+                       "tests/data/sync_osc/sync_osc.h5",
+                       "LICENSE", "extern/fast_float/LICENSE-MIT"):
               assert any(n.endswith(need) for n in names), f"sdist is missing {need}"
-          print(f"{len(names)} files, vendored fast_float present")
+          print(f"{len(names)} files, vendored fast_float and both licences present")
           EOF
       - name: Build and install from the sdist alone
         run: python -m pip install dist/*.tar.gz

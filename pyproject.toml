@@ -8,6 +8,14 @@ readme = "README.md"
 # No upper bound: nanobind tracks new CPython releases, which is half the point of the port.
 requires-python = ">=3.10"
 dependencies = ["numpy"]
+# MIT, as an SPDX expression (PEP 639) rather than the deprecated license table or the
+# `License ::` classifier, which must not be combined with one. It is what puts LICENSE in the
+# sdist and in the wheel's .dist-info, and the license on the PyPI page.
+license = "MIT"
+# fast_float's notice ships too: it is vendored under extern/ and compiled into the binary, so
+# the wheel is a copy of it and its MIT terms ask that the notice travel along. It is MIT as
+# well -- see extern/fast_float/README.md -- so the expression above covers the whole wheel.
+license-files = ["LICENSE", "extern/fast_float/LICENSE-MIT"]
 
 [project.urls]
 Source = "https://github.com/mloecher/seq2waveform"
@@ -18,7 +26,8 @@ Issues = "https://github.com/mloecher/seq2waveform/issues"
 # generated glue and the .pyi writer. >=3.0 is what this has actually been built with
 # (pixi.lock pins 3.1.0); 2.x is untested. The bound does not hold back new CPython
 # support, which arrives in nanobind minors.
-requires = ["scikit-build-core>=0.10", "nanobind>=3.0,<4"]
+# The 0.10 floor moved to 0.11: that is where the SPDX license expression above is understood.
+requires = ["scikit-build-core>=0.11", "nanobind>=3.0,<4"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]

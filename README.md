@@ -63,3 +63,9 @@ and prefers it over the bundled copy for a dataset in both.
 CI builds the core and the bindings on gcc, clang and MSVC, and runs everything the bundled data
 answers for — including the `.h5` comparison. The DSV half still skips there, so a green run is no
 substitute for `pixi run test`.
+
+## License
+
+MIT — see [LICENSE](https://github.com/mloecher/seq2waveform/blob/main/LICENSE). The vendored
+[fast_float](https://github.com/mloecher/seq2waveform/blob/main/extern/fast_float/README.md) is MIT
+too, and its notice ships in the wheel alongside this one.
