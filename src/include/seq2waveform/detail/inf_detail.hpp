@@ -1,9 +1,4 @@
-// Internals of inf.cpp, exposed only so the tests can reach them.
-//
-// `merge_contiguous` undoes Siemens's `MaxAdcSegmentLength` chunking and the Rust unit test drives
-// it directly with hand-built segments, which is far clearer than synthesising an INF with a split
-// readout. `split_cell` is the whole of the table-cell grammar. Nothing outside inf.cpp and
-// tests/test_inf.cpp should include this.
+// INF parsing helpers shared with the core tests.
 
 #pragma once
 

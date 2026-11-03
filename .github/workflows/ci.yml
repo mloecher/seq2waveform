@@ -1,14 +1,5 @@
-# The C++ core on four toolchains, the bindings on each platform, and everything the repo's own
-# data can answer for. `tests/data/` carries two datasets -- a `.seq` and its Pulseq `.h5`, no DSV
-# -- so the golden comparison and `test_h5.py`, the only test here that does not depend on our own
-# arithmetic, run on every toolchain rather than only on a machine with the corpus.
-#
-# What still skips is the DSV half: those files are a vendor simulator's output and stay out of a
-# public repo, so a green run is still not a green `pixi run test`, which has the full ~1.6 GB
-# corpus. `tests/test_datasets.py` is what stops a run of nothing but skips from passing as a
-# checked one. The committed stub is checked by `pixi run check-stub` instead, where pixi.lock
-# pins the nanobind that writes it.
-
+# Core toolchains and Python bindings with bundled .seq/.h5 data.
+# DSV corpus comparisons skip when the external exports are absent.
 name: CI
 
 on:
@@ -28,8 +19,6 @@ env:
 
 jobs:
   core:
-    # No Python anywhere: S2W_BUILD_MODULE=OFF, so a core compile error arrives without a wheel
-    # build in front of it. Both macOS arches, since they are different compilers in practice.
     name: core / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -48,7 +37,6 @@ jobs:
         with:
           persist-credentials: false   # don't leave the token in .git/config
       - name: Configure
-        # CMakeLists defaults the build type; multi-config generators take --config below.
         run: cmake -S . -B build -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -56,7 +44,6 @@ jobs:
         run: ctest --test-dir build --output-on-failure -C Release
 
   package:
-    # The bindings, plus nanobind's stub generation. 3.10 is the floor the wheels claim.
     name: package / ${{ matrix.os }} py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -68,7 +55,6 @@ jobs:
         include:
           - { os: ubuntu-latest, python: "3.10" }
           - { os: ubuntu-latest, python: "3.13" }
-          # The only place the FREE_THREADED build is exercised; elsewhere the flag is a no-op.
           - { os: ubuntu-latest, python: "3.14t" }
           - { os: macos-latest, python: "3.13" }
           - { os: windows-latest, python: "3.13" }
@@ -83,27 +69,19 @@ jobs:
       - name: Install
         run: python -m pip install . pytest numpy pytest-github-actions-annotate-failures
       - name: The GIL must stay off on a free-threaded interpreter
-        # A module that hasn't declared itself GIL-free makes CPython re-enable the GIL and warn.
-        # That's a silent performance cliff, not an error, so assert the switch directly.
         if: endsWith(matrix.python, 't')
         working-directory: ${{ runner.temp }}   # the installed package, not the repo's own
         run: >
           python -X faulthandler -c "import sys, seq2waveform;
           assert not sys._is_gil_enabled(), 'importing seq2waveform re-enabled the GIL';
           print('GIL is off, free-threaded build is honoured')"
+      # h5py has no wheel for the free-threaded job.
       - name: h5py, for the Pulseq reference comparison
-        # test_h5.py importorskips h5py, so a missing one costs a silent skip rather than an
-        # error. Hence a hard install here and no free-threaded build: h5py has no cp314t wheel,
-        # and that job is about the GIL switch, not about the reference datasets.
         if: ${{ !endsWith(matrix.python, 't') }}
         run: python -m pip install h5py
       - name: Tests
-        # The whole suite, not `-m no_corpus`: tests/data/ makes the golden comparison and the h5
-        # check runnable here, and they are only worth carrying if a failure fails the job. `-rs`
-        # lists what skipped anyway -- the DSV halves, and test_h5 on 3.14t.
         run: pytest tests -rs -v
       - name: Import and compute from outside the source tree
-        # Elsewhere, so this is the installed package and not the repo's own seq2waveform/.
         working-directory: ${{ runner.temp }}
         run: >
           python -c "import numpy as np, seq2waveform as s;
@@ -112,8 +90,6 @@ jobs:
           print('ok, gamma =', s.SCAN_GAMMA)"
 
   sdist:
-    # Must be self-contained: fast_float is vendored so a source build needs no network. And
-    # it must carry both licence notices, since the wheels built from it distribute fast_float.
     name: sdist
     runs-on: ubuntu-latest
     timeout-minutes: 15

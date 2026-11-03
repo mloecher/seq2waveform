@@ -1,14 +1,5 @@
-// Reader for the Siemens DSP-Simulator INF file.
-//
-// A large human-readable log with two block shapes:
-//   * `adc MeasHeader <start_us> <dur_us>` + `key : value` lines  -> AdcSegment
-//   * `* EventBlock <start_us> <dur_us>` + a `|`-delimited table  -> EventBlock
-//
-// Parse once into `Inf`, then pull typed events (ADC times, triggers, RF) as thin queries over the
-// table columns (`Rel.Time | TXFlip/Dur | Freq/Phase | ... | SYNC/Dur`). Rows whose first cell is
-// not a number -- headers, separators, the rotation matrix, RTAdjData -- are skipped.
-//
-// Ported from the Rust `dsv/inf.rs`.
+// Siemens INF log reader. ADC headers give acquisition segments; event-block tables
+// give RF, frequency/phase and SYNC events. Non-numeric table rows are ignored.
 
 #pragma once
 

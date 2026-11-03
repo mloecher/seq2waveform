@@ -1,13 +1,5 @@
-// Core tests for the Sampler and k-space, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/sample.rs, with both sequences included verbatim.
-//
-// The arithmetic these pin down is worth stating once: the Z trapezoid in both sequences has
-// amplitude 100 Hz/m, 100 us ramps and an 800 us flat, so its area is
-// 100 * (800e-6 + 100e-6) = 0.09 1/m. k-space is that integral directly -- gamma is already baked
-// into the Hz/m gradients, and multiplying by it again is how you end up wrong by a factor of
-// 42.6 million.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for sampling and k-space. The test trapezoid has area 0.09 1/m:
+// 100 Hz/m * (800 us flat + 100 us from the ramps).
 
 #include <algorithm>
 #include <cmath>
@@ -179,9 +171,7 @@ void arbitrary_sampling_via_the_sampler() {
 }
 
 void unsorted_times_match_the_sorted_sweep() {
-    // No Rust counterpart. The Sampler picks a forward sweep for non-decreasing times and a
-    // binary search otherwise; the two paths must agree, or a caller gets different numbers for
-    // the same query depending only on the order they asked in.
+    // Sorted and unsorted queries must agree at the same times.
     const s2w::SequenceSource seq = source(kAdcSeq);
     const s2w::Sampler s = seq.sampler();
     std::vector<s2w::Ps> rising;
@@ -210,10 +200,7 @@ void unsorted_times_match_the_sorted_sweep() {
 }
 
 void adc_with_no_preceding_excitation() {
-    // No Rust counterpart, and no dataset reaches it: across all five corpora every ADC has an
-    // excitation before it, so no data-driven test reaches the sentinel path. An ADC in the
-    // first block with no RF anywhere must report (nan, nan, nan) and integrate k-space from the
-    // start of the waveform rather than from garbage.
+    // An ADC without preceding RF reports NaN metadata and integrates from the start.
     const char* no_rf =
         "[DEFINITIONS]\n"
         "GradientRasterTime 1e-05\n"
@@ -249,7 +236,7 @@ void adc_with_no_preceding_excitation() {
 }
 
 void uniform_grid_edges() {
-    // No Rust counterpart; these are the degenerate inputs the helper guards.
+    // Degenerate uniform grids return the zero instant.
     check(s2w::uniform_grid(0.0, 1e-5).size() == 1, "zero duration gives one point");
     check(s2w::uniform_grid(1e-3, 0.0).size() == 1, "zero raster gives one point");
     check(s2w::uniform_grid(1e-3, -1.0).size() == 1, "negative raster gives one point");

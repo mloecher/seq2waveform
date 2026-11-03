@@ -1,8 +1,4 @@
-// Internals of dsv.cpp, exposed only so the tests can reach them.
-//
-// `rle_to_piecewise` is the whole of the DSV decode, and the Rust unit test calls it directly with
-// a hand-written delta stream -- far clearer than driving it through a synthetic file. Nothing
-// outside dsv.cpp and tests/test_dsv.cpp should include this.
+// DSV decoding helpers shared with the core tests.
 
 #pragma once
 

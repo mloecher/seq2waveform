@@ -1,12 +1,6 @@
-"""Regenerate the committed golden snapshots under `tests/golden/`.
+"""Regenerate golden snapshots for intended output changes; review the diff.
 
-Run this only when a change to the output is *intended*, and say in the commit message why the
-numbers moved. A snapshot that gets regenerated to make a red test green is worse than no snapshot
-at all, so the diff is the review: a one-line change to a reader should move one or two columns,
-not ninety.
-
-Usage
------
+Usage:
     pixi run golden-update
     pixi run python scripts/gen_golden.py --only cones
 """

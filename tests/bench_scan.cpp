@@ -1,15 +1,5 @@
-// Does swapping std::from_chars for fast_float change any parsed value, and what does it cost?
-//
-// Decision aid, not a test: `pixi run bench`. Two questions, in order of importance.
-//
-// 1. Bit-identity. Both parsers claim correct rounding, which is a uniqueness guarantee -- there
-//    is exactly one nearest double -- so they *should* agree on every token. This checks it on
-//    real shape data rather than trusting the claim, comparing bit patterns so a sign or a NaN
-//    payload cannot slip through. If this ever reports a mismatch, the swap is off the table.
-// 2. Throughput, on the tokens that actually dominate: `[SHAPES]` sample lines are ~95% of the
-//    floats in a large .seq (cones: 1.3M shape samples against ~50k fields everywhere else), so
-//    the micro-benchmark runs over exactly those. The whole-file parse time is reported next to
-//    it, to show how much of the end-to-end cost is float scanning at all.
+// Compare fast_float and std::from_chars bit patterns and timings on shape tokens.
+// Usage: bench_scan <file.seq> [repeats]
 
 #include <algorithm>
 #include <chrono>
@@ -129,9 +119,7 @@ double time_parser(bool (*parse)(std::string_view, double&), const std::vector<s
 
 }  // namespace
 
-/// Print what each parser does with out-of-range input -- the one case where the parsers, and the
-/// three standard libraries, are known to disagree (WG21 P4168). Rust saturates: "1e999" is +inf,
-/// "1e-999" is 0.0. Recorded here because it decides whether parse_f64 can match Rust exactly.
+/// Report parser behavior on floating-point overflow and underflow.
 void report_out_of_range() {
     const char* cases[] = {"1e999", "-1e999", "1e-999", "-1e-999"};
     std::printf("out-of-range behaviour (ec==0 means accepted):\n");

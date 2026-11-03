@@ -1,4 +1,4 @@
-// Library-wide constants. The Rust crate keeps these at its root (lib.rs).
+// Shared physical constants.
 
 #pragma once
 

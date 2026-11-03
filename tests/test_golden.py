@@ -1,21 +1,8 @@
-"""Golden-file tests: the output on the real corpus, pinned to committed snapshots.
+"""Compare output digests against committed snapshots.
 
-These exist to replace what the cut-over removed. The differential suite asserted bit-exact
-equality against an independent implementation; nothing can bring that back, but it is not the
-only thing that suite was doing. Most of its value in practice was *change detection* -- noticing
-that a refactor moved a number -- and a snapshot does that just as well, because the reference is
-the output everything else was validated against at the moment parity was proven.
-
-What it does not do is tell you the numbers are right. `test_h5.py` is the outside answer.
-A snapshot only says "the same as before", so the snapshots themselves must only ever be
-regenerated deliberately: see `scripts/gen_golden.py`.
-
-The columns deliberately cover what nothing else checks on real data -- triggers, RF event
-metadata, ADC grouping after the `MaxAdcSegmentLength` merge, the INF and DSV readers, and the
-`centers` / `dsv` gradient modes -- plus the gradient corners and flat k-space, which are the
-primary outputs.
-
-A run that reports *skipped* checked nothing; see `conftest.py`.
+Covers gradient modes, k-space, event metadata and the DSV/INF readers. Snapshots
+detect output changes; test_h5.py checks against an independent reference.
+Regenerate intended changes with scripts/gen_golden.py and review the diff.
 """
 
 from __future__ import annotations

@@ -1,11 +1,5 @@
-// nanobind bindings for the seq2waveform C++ core.
-//
-// Keep this layer thin: call into the core, then hand the results to Python. Large numeric outputs
-// move to the heap and are owned by a capsule, so numpy views them without copying.
-//
-// Times crossing this boundary follow the Rust bindings' convention: float64 seconds, or int64
-// picoseconds taken verbatim (bit-exact -- the path for exact delay sweeps). Each such method is
-// bound twice so the generated stub carries both as @overload.
+// nanobind bindings: call the core and return NumPy arrays owned by capsules.
+// Times cross the boundary as float64 seconds or exact int64 picoseconds.
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -14,6 +8,7 @@
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <map>
@@ -45,9 +40,7 @@ using Out = nb::ndarray<nb::numpy, T, nb::ndim<1>>;
 template <typename T>
 using In = nb::ndarray<const T, nb::ndim<1>, nb::c_contig>;
 
-/// Hand a std::vector to Python without copying: the vector moves to the heap and a capsule owns
-/// it, so numpy frees it when the last view goes away. (Rust's `into_pyarray` does this for free;
-/// in C++ it is this helper -- route every array return through it.)
+/// Move a vector into a capsule; NumPy shares its storage until the last view is freed.
 template <typename T>
 Out<T> to_numpy(std::vector<T>&& vec) {
     auto* owned = new std::vector<T>(std::move(vec));
@@ -74,7 +67,28 @@ std::vector<s2w::Ps> ps_verbatim(In<std::int64_t> times) {
 }
 
 std::vector<double> to_vector(In<double> a) {
+    if (a.shape(0) == 0) {
+        return {};
+    }
     return std::vector<double>(a.data(), a.data() + a.shape(0));
+}
+
+s2w::PiecewiseLinear make_waveform(std::vector<s2w::Ps> times, std::vector<double> values) {
+    if (times.size() != values.size()) {
+        throw nb::value_error("corner times and values must have the same length");
+    }
+    if (std::adjacent_find(times.begin(), times.end(),
+                           [](s2w::Ps a, s2w::Ps b) { return a >= b; }) != times.end()) {
+        throw nb::value_error("corner times must be strictly increasing in picoseconds");
+    }
+    return {std::move(times), std::move(values)};
+}
+
+In<double> checked_moments(const s2w::PiecewiseLinear& w, In<double> cum) {
+    if (cum.shape(0) != w.size()) {
+        throw nb::value_error("cum must have one value per waveform corner");
+    }
+    return cum;
 }
 
 /// Corner or sample times as float64 seconds.
@@ -122,21 +136,13 @@ const char* grad_mode_to_str(s2w::GradMode m) {
 template <typename T>
 using InAny = nb::ndarray<const T, nb::c_contig>;
 
-/// A Trace as the `(t, x, y, z)` tuple the Rust bindings return.
-///
-/// By value, and every caller hands over a temporary, so the three axis arrays move into their
-/// capsules. Taking a `const&` and copying each one to have something movable cost a full
-/// duplicate of the output -- 144 MB on a whole-run `gradients_dense`.
+/// Take ownership of a trace and move its axis arrays into NumPy.
 nb::object trace_to_py(s2w::Trace tr) {
     return nb::make_tuple(secs_array(tr.t), to_numpy(std::move(tr.x)), to_numpy(std::move(tr.y)),
                           to_numpy(std::move(tr.z)));
 }
 
-/// Flatten an N-D time array to Ps, keeping its shape so the sampled values can be reshaped back.
-///
-/// Rust's `extract_ps_dyn` plus `reshape_like`. Sampling an `(events, samples)` grid is common
-/// enough that flattening it at the boundary and handing back a 1-D array would be a real
-/// annoyance; the values are per-point, so the shape carries straight through.
+/// Flatten query times to picoseconds, retaining the shape for the result.
 template <typename T, typename Conv>
 std::pair<std::vector<s2w::Ps>, std::vector<std::size_t>> flatten_times(const InAny<T>& a,
                                                                        Conv conv) {
@@ -155,10 +161,10 @@ std::pair<std::vector<s2w::Ps>, std::vector<std::size_t>> flatten_times(const In
     return {std::move(out), std::move(shape)};
 }
 
-/// Reshape a flat result back to the query's shape; a no-op for 0-D and 1-D input.
+/// Restore the query shape, including scalar arrays.
 nb::object reshape_like(std::vector<double>&& v, const std::vector<std::size_t>& shape) {
     nb::object arr = nb::cast(to_numpy(std::move(v)));
-    if (shape.size() <= 1) {
+    if (shape.size() == 1) {
         return arr;
     }
     return arr.attr("reshape")(nb::cast(shape));
@@ -167,7 +173,7 @@ nb::object reshape_like(std::vector<double>&& v, const std::vector<std::size_t>&
 s2w::Ps ps_of_secs(double x) { return s2w::Ps::from_secs(x); }
 s2w::Ps ps_of_raw(std::int64_t x) { return s2w::Ps(x); }
 
-/// `(times, reference_s)` per spec -- the Rust bindings' spec shape.
+/// Convert sample specs to Python (times_s, reference_s) tuples.
 std::vector<nb::object> specs_to_py(const std::vector<s2w::SampleSpec>& specs) {
     std::vector<nb::object> out;
     out.reserve(specs.size());
@@ -177,9 +183,7 @@ std::vector<nb::object> specs_to_py(const std::vector<s2w::SampleSpec>& specs) {
     return out;
 }
 
-/// By value for the same reason as `trace_to_py`, and it matters more here: the three k-space
-/// arrays are the whole run, so copying them to make them movable duplicated 517 MB on `cones`.
-/// `offsets` still has to be rebuilt -- size_t to int64 is a conversion, not a move.
+/// Move whole-run axis arrays to Python; offsets need a size_t-to-int64 conversion.
 nb::object flat_to_py(s2w::FlatTrace f) {
     std::vector<std::int64_t> off;
     off.reserve(f.offsets.size());
@@ -198,19 +202,13 @@ char axis_from_str(const std::string& axis) {
 }
 
 
-/// Register the shared WaveformSource surface on a bound class.
-///
-/// `Sequence` and `DsvSet` expose the same sampling and k-space API because they *are* the same
-/// `WaveformSource` -- which is the whole point of having the interface. Binding it once here is
-/// what stops the two Python surfaces drifting apart, and it is why a DSV+INF set can stand in for
-/// a `.seq` without the caller changing anything.
+/// Bind the shared sampling API once for Sequence and DsvSet.
 template <typename T>
 void bind_waveform_source(nb::class_<T>& cls) {
     cls.def(
            "gradient",
            [](const T& s, const std::string& axis) {
-               // Not `const`: a const local cannot be moved from, so the values would be
-               // copied out rather than handed to numpy -- 21 MB of corners on `cones`.
+               // Keep the values movable so NumPy can take ownership.
                s2w::PiecewiseLinear g = s.gradient(axis_from_str(axis));
                return nb::make_tuple(secs_array(g.t), to_numpy(std::move(g.v)));
            },
@@ -293,9 +291,8 @@ void bind_waveform_source(nb::class_<T>& cls) {
         .def(
             "adc_specs", [](const T& s) { return specs_to_py(s.adc_specs()); },
             "Where to sample for each ADC event, and what to integrate k-space from.\n\n"
-            "The reference is the most recent excitation *before* the event. A warning goes to\n"
-            "stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is\n"
-            "how a mismatched sequence announces itself, so do not silence it.\n\n"
+            "Uses the most recent excitation at or before the event, or the waveform start if\n"
+            "none precedes it. Writes a warning to stderr when excitation and ADC counts differ.\n\n"
             "Returns\n"
             "-------\n"
             "list of tuple\n"
@@ -450,7 +447,8 @@ NB_MODULE(_core, m) {
         .def(
             "__init__",
             [](s2w::PiecewiseLinear* self, In<double> t_seconds, In<double> values) {
-                new (self) s2w::PiecewiseLinear{ps_from_seconds(t_seconds), to_vector(values)};
+                new (self) s2w::PiecewiseLinear(
+                    make_waveform(ps_from_seconds(t_seconds), to_vector(values)));
             },
             "t_seconds"_a, "values"_a,
             "Build from corner times in seconds.\n\n"
@@ -463,7 +461,7 @@ NB_MODULE(_core, m) {
         .def_static(
             "from_picoseconds",
             [](In<std::int64_t> t_ps, In<double> values) {
-                return s2w::PiecewiseLinear{ps_verbatim(t_ps), to_vector(values)};
+                return make_waveform(ps_verbatim(t_ps), to_vector(values));
             },
             "t_ps"_a, "values"_a,
             "Build from corner times in int64 picoseconds, taken verbatim.\n\n"
@@ -554,11 +552,11 @@ NB_MODULE(_core, m) {
             "cumulative_moment",
             [](const s2w::PiecewiseLinear& w) { return to_numpy(w.cumulative_moment()); },
             "Running integral at each corner: `cum[i]` is the integral from `t[0]` to `t[i]`.\n\n"
-            "Precompute once, then `moment_to` and `moments_at_sorted` evaluate in O(1) per point.")
+            "`moment_to` locates each query by binary search; `moments_at_sorted` uses a forward sweep.")
         .def(
             "moment_to",
             [](const s2w::PiecewiseLinear& w, double t_seconds, In<double> cum) {
-                return w.moment_to(s2w::Ps::from_secs(t_seconds), to_vector(cum));
+                return w.moment_to(s2w::Ps::from_secs(t_seconds), checked_moments(w, cum).data());
             },
             "t_seconds"_a, "cum"_a,
             "Integral from the first corner to `t_seconds`, using precomputed `cum`.\n\n"
@@ -566,14 +564,16 @@ NB_MODULE(_core, m) {
         .def(
             "moments_at_sorted",
             [](const s2w::PiecewiseLinear& w, In<double> times, In<double> cum) {
-                return to_numpy(w.moments_at_sorted(ps_from_seconds(times), to_vector(cum)));
+                return to_numpy(w.moments_at_sorted(ps_from_seconds(times),
+                                                    to_vector(checked_moments(w, cum))));
             },
             "times"_a, "cum"_a,
             "`moment_to` over non-decreasing `times` (float64 seconds) with one forward sweep.")
         .def(
             "moments_at_sorted",
             [](const s2w::PiecewiseLinear& w, In<std::int64_t> times, In<double> cum) {
-                return to_numpy(w.moments_at_sorted(ps_verbatim(times), to_vector(cum)));
+                return to_numpy(w.moments_at_sorted(ps_verbatim(times),
+                                                    to_vector(checked_moments(w, cum))));
             },
             "times"_a, "cum"_a,
             "`moment_to` over non-decreasing `times` (int64 picoseconds) with one forward sweep.");
@@ -606,9 +606,7 @@ NB_MODULE(_core, m) {
 
     m.attr("SCAN_GAMMA") = s2w::kScanGamma;
 
-    // A malformed line raises ValueError carrying the parser's own message, which names the
-    // source line -- the point being that a caller can tell *which* line, not merely that it
-    // failed.
+    // Preserve parser details in Python ValueError messages.
     nb::register_exception_translator(
         [](const std::exception_ptr& p, void*) {
             try {
@@ -628,7 +626,7 @@ NB_MODULE(_core, m) {
         "Parameters\n"
         "----------\n"
         "path : str\n"
-        "    Path to a Pulseq `.seq` file (format v1.4/1.5).\n\n"
+        "    Path to a Pulseq `.seq` file with the 1.5 event layout.\n\n"
         "Returns\n"
         "-------\n"
         "int\n"
@@ -645,7 +643,7 @@ NB_MODULE(_core, m) {
         "Parameters\n"
         "----------\n"
         "path : str\n"
-        "    Path to a Pulseq `.seq` file (format v1.4/1.5).\n"
+        "    Path to a Pulseq `.seq` file with the 1.5 event layout.\n"
         "gradient_mode : {'pulseq', 'centers', 'dsv'}, optional\n"
         "    How centers-sampled arbitrary gradients render; see the `gradient_mode`\n"
         "    property. Default 'pulseq'.\n\n"
@@ -714,11 +712,9 @@ NB_MODULE(_core, m) {
         m, "DsvSet",
         "A Siemens DSP-Simulator measurement set: three gradient channels, the RFD envelope\n"
         "and the INF.\n\n"
-        "The DSV-side analogue of a `Sequence`, in the Siemens frame, and the same\n"
-        "`WaveformSource` -- so the sampling and k-space API below is identical, and a DSV+INF\n"
-        "set can stand in for a `.seq`. Use it to predict trajectories for sequences that have\n"
-        "no `.seq` at all. Gradients, ADC and excitation all share the ~1020 us lead-in, so\n"
-        "k-space (an integral *difference*) comes out right with no lead-in juggling.\n\n"
+        "Uses the same sampling API as `Sequence`. Gradients, ADC and RF events share the\n"
+        "Siemens time frame, including its lead-in, so k-space needs no time shift. The INF\n"
+        "does not record RF use; all RF events are treated as excitations.\n\n"
         "Parameters\n"
         "----------\n"
         "grx, gry, grz : str\n"
@@ -748,12 +744,11 @@ NB_MODULE(_core, m) {
     nb::class_<s2w::Sampler>(
         m, "Sampler",
         "Precomputed gradient channels and their cumulative moments, for fast repeated\n"
-        "sampling. Build one with `Sequence.sampler()`.\n\n"
+        "sampling. Build one with `Sequence.sampler()` or `DsvSet.sampler()`.\n\n"
         "Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,\n"
         "for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape\n"
         "preserved.\n\n"
-        "Both methods return `(t, x, y, z)`, matching every other trace-returning method in this\n"
-        "module. Index `[1:]` for the three axes and `[1 + axis]` for one of them.")
+        "`gradients` and `kspace` return `(t, x, y, z)`. `kspace_flat` returns `(kx, ky, kz)`.")
         .def(
             "gradients",
             [](const s2w::Sampler& s, InAny<double> times) {
@@ -1019,7 +1014,7 @@ NB_MODULE(_core, m) {
         "The first INF event block (index 0) is the Siemens `GLOBzSet` setup; the second (index 1)\n"
         "is the first Pulseq block, and *its* Siemens start time is the lead-in (~1020 us). Add it\n"
         "to a Pulseq-frame time to get the Siemens-frame time, where the DSV waveforms live.\n"
-        "Never fit it.\n\n"
+        "\n"
         "Parameters\n"
         "----------\n"
         "path : str\n"

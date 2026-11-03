@@ -1,12 +1,5 @@
-// Time parse, expansion and the k-space pipeline in pure C++, with no Python boundary.
-//
-// The counterpart of the Rust repo's `examples/bench_expand.rs` and `examples/time_kspace.rs`, and
-// it prints the same phases in the same order so the two can be read side by side. Comparing
-// native-to-native is the point: it says whether a gap seen from Python lives in the algorithm or
-// in the binding layer.
-//
-//   cmake --build build-tests --config Release --target bench_expand
-//   ./build-tests/tests/Release/bench_expand.exe <file.seq>
+// Time parsing, waveform expansion and k-space without Python.
+// Usage: bench_expand <file.seq>
 
 #include <chrono>
 #include <cstdio>

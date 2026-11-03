@@ -1,9 +1,4 @@
-// Internals of waveform.cpp, exposed only so the tests can reach them.
-//
-// Rust's unit tests live in the same module as the private functions they exercise and need no
-// equivalent of this header; C++ has no such arrangement, and these two steps are where a port
-// drifts, so testing them directly rather than through `gradient()` is worth a header. Nothing
-// outside waveform.cpp and tests/test_waveform.cpp should include it.
+// Waveform reconstruction helpers shared with the core tests.
 
 #pragma once
 

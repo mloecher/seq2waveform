@@ -107,7 +107,7 @@ class PiecewiseLinear:
         """
         Running integral at each corner: `cum[i]` is the integral from `t[0]` to `t[i]`.
 
-        Precompute once, then `moment_to` and `moments_at_sorted` evaluate in O(1) per point.
+        `moment_to` locates each query by binary search; `moments_at_sorted` uses a forward sweep.
         """
 
     def moment_to(self, t_seconds: float, cum: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', writable=False)]) -> float:
@@ -148,7 +148,7 @@ def parse_file(path: str) -> int:
     Parameters
     ----------
     path : str
-        Path to a Pulseq `.seq` file (format v1.4/1.5).
+        Path to a Pulseq `.seq` file with the 1.5 event layout.
 
     Returns
     -------
@@ -169,7 +169,7 @@ class Sequence:
     Parameters
     ----------
     path : str
-        Path to a Pulseq `.seq` file (format v1.4/1.5).
+        Path to a Pulseq `.seq` file with the 1.5 event layout.
     gradient_mode : {'pulseq', 'centers', 'dsv'}, optional
         How centers-sampled arbitrary gradients render; see the `gradient_mode`
         property. Default 'pulseq'.
@@ -302,9 +302,8 @@ class Sequence:
         """
         Where to sample for each ADC event, and what to integrate k-space from.
 
-        The reference is the most recent excitation *before* the event. A warning goes to
-        stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is
-        how a mismatched sequence announces itself, so do not silence it.
+        Uses the most recent excitation at or before the event, or the waveform start if
+        none precedes it. Writes a warning to stderr when excitation and ADC counts differ.
 
         Returns
         -------
@@ -419,11 +418,9 @@ class DsvSet:
     A Siemens DSP-Simulator measurement set: three gradient channels, the RFD envelope
     and the INF.
 
-    The DSV-side analogue of a `Sequence`, in the Siemens frame, and the same
-    `WaveformSource` -- so the sampling and k-space API below is identical, and a DSV+INF
-    set can stand in for a `.seq`. Use it to predict trajectories for sequences that have
-    no `.seq` at all. Gradients, ADC and excitation all share the ~1020 us lead-in, so
-    k-space (an integral *difference*) comes out right with no lead-in juggling.
+    Uses the same sampling API as `Sequence`. Gradients, ADC and RF events share the
+    Siemens time frame, including its lead-in, so k-space needs no time shift. The INF
+    does not record RF use; all RF events are treated as excitations.
 
     Parameters
     ----------
@@ -522,9 +519,8 @@ class DsvSet:
         """
         Where to sample for each ADC event, and what to integrate k-space from.
 
-        The reference is the most recent excitation *before* the event. A warning goes to
-        stderr if the excitation and ADC counts disagree (fat-sat, for instance) -- that is
-        how a mismatched sequence announces itself, so do not silence it.
+        Uses the most recent excitation at or before the event, or the waveform start if
+        none precedes it. Writes a warning to stderr when excitation and ADC counts differ.
 
         Returns
         -------
@@ -637,14 +633,13 @@ class DsvSet:
 class Sampler:
     """
     Precomputed gradient channels and their cumulative moments, for fast repeated
-    sampling. Build one with `Sequence.sampler()`.
+    sampling. Build one with `Sequence.sampler()` or `DsvSet.sampler()`.
 
     Query times are float64 seconds, or int64 picoseconds taken verbatim -- the exact path,
     for delay sweeps that must stay bit-exact. An N-D time array comes back with its shape
     preserved.
 
-    Both methods return `(t, x, y, z)`, matching every other trace-returning method in this
-    module. Index `[1:]` for the three axes and `[1 + axis]` for one of them.
+    `gradients` and `kspace` return `(t, x, y, z)`. `kspace_flat` returns `(kx, ky, kz)`.
     """
 
     @overload
@@ -845,7 +840,6 @@ def inf_lead_in(path: str) -> float:
     The first INF event block (index 0) is the Siemens `GLOBzSet` setup; the second (index 1)
     is the first Pulseq block, and *its* Siemens start time is the lead-in (~1020 us). Add it
     to a Pulseq-frame time to get the Siemens-frame time, where the DSV waveforms live.
-    Never fit it.
 
     Parameters
     ----------

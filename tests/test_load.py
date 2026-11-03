@@ -1,9 +1,7 @@
-"""`seq2waveform.load`: source dispatch, DSV discovery, and the dsv-by-default rule.
+"""Test load() dispatch, DSV discovery and argument validation.
 
-Most of this needs no corpus. The discovery and argument checks run against touched empty files,
-because `load` validates and resolves paths before it parses anything -- which is itself worth
-pinning, since an argument that does not apply to the source named should fail immediately rather
-than after reading a 60 MB channel.
+Discovery tests use empty files because paths and arguments are checked before
+parsing. Data comparisons use the bundled files or external corpus.
 """
 
 from __future__ import annotations
@@ -113,7 +111,7 @@ def test_an_unrecognised_suffix_says_what_is_accepted(tmp_path):
 
 @pytest.mark.no_corpus
 def test_gamma_is_rejected_for_a_seq_rather_than_ignored(tmp_path):
-    """A .seq takes its scaling from the file, so a gamma argument means a misunderstanding."""
+    """Sequence amplitudes are already in Hz/m."""
     empty = tmp_path / "x.seq"
     empty.touch()
     with pytest.raises(ValueError, match="gamma does not apply"):
@@ -123,14 +121,14 @@ def test_gamma_is_rejected_for_a_seq_rather_than_ignored(tmp_path):
 @pytest.mark.no_corpus
 @pytest.mark.parametrize("mode", ["pulseq", "centers"])
 def test_a_non_dsv_mode_is_rejected_for_a_dsv_export(tmp_path, mode):
-    """Silently ignoring it would be the dangerous reading: the export *is* the dsv waveform."""
+    """A DSV export cannot be reconstructed in another mode."""
     with pytest.raises(ValueError, match="does not apply to a DSV export"):
         s2w.load(_export(tmp_path / "exp"), mode=mode)
 
 
 @pytest.mark.no_corpus
 def test_mode_dsv_is_accepted_for_a_dsv_export(tmp_path):
-    """Explicitly asking for what it already is must not be an error; it fails later, on parse."""
+    """The mode check succeeds; the empty file then fails during parsing."""
     with pytest.raises(Exception) as exc:  # noqa: PT011 -- the point is *which* error it is not
         s2w.load(_export(tmp_path / "exp"), mode="dsv")
     assert "does not apply" not in str(exc.value)
@@ -146,7 +144,7 @@ SEQ_NAMES = datasets(".seq")
 @pytest.mark.skipif(not SEQ_NAMES, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 @pytest.mark.parametrize("name", SEQ_NAMES)
 def test_load_defaults_a_seq_to_dsv_mode(name):
-    """The whole point of `load`: the default is the mode the two sources share."""
+    """load() defaults to the gradient representation shared with DSV exports."""
     wf = s2w.load(seq_path(name))
     assert isinstance(wf, s2w.Sequence)
     assert wf.gradient_mode == "dsv"
@@ -175,7 +173,7 @@ def test_load_opens_a_real_dsv_export_from_the_directory(name):
 
 @pytest.mark.skipif(not SEQ_NAMES, reason=f"no datasets in {TESTDATA} or {BUNDLED}")
 def test_both_sources_answer_the_shared_surface(request):
-    """What `load` is for: callers need not know which kind they were handed."""
+    """Both loaded source types support the shared sampling API."""
     name = next((n for n in SEQ_NAMES if dsv_paths(n) is not None), None)
     if name is None:
         pytest.skip("no dataset has both a .seq and a DSV export")

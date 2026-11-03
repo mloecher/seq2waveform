@@ -61,9 +61,7 @@ std::vector<double> Shape::decompressed() const {
     while (i < n) {
         const double v = data[i];
         if (i + 2 < n && data[i + 1] == v) {
-            // Rust: `(data[i + 2].round() as i64 + 2).max(0) as usize`. The saturating cast and
-            // the clamp below keep a corrupt count from being undefined behaviour here while
-            // Rust merely computes a useless number.
+            // Saturate before adding two to keep malformed repeat counts in range.
             std::int64_t k = saturating_i64(std::round(data[i + 2]));
             constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
             k = k > kMax - 2 ? kMax - 2 : k;
@@ -76,7 +74,7 @@ std::vector<double> Shape::decompressed() const {
         }
     }
 
-    // Cumulative sum, in order: a running double accumulator, so it rounds exactly as Rust's does.
+    // Sum in order to preserve floating-point rounding.
     double acc = 0.0;
     for (double& d : deriv) {
         acc += d;
@@ -90,12 +88,9 @@ std::optional<double> Sequence::definition_f64(const std::string& key) const {
     if (it == definitions.end()) {
         return std::nullopt;
     }
-    // Rust's `split_whitespace().next()`: the first token, skipping any leading whitespace. Stored
-    // values are already trimmed, but matching the Rust spelling keeps the two readers equivalent
-    // for a map populated by hand.
-    const std::vector<std::string_view> f = fields(it->second);
+    const std::string_view first = split_first_space(trim(it->second)).first;
     double v = 0.0;
-    if (f.empty() || !parse_f64(f.front(), v)) {
+    if (!parse_f64(first, v)) {
         return std::nullopt;
     }
     return v;

@@ -1,20 +1,7 @@
-"""Internal invariants on the real datasets, with no external reference.
+"""Compare equivalent sampling paths on real datasets.
 
-Run:  pixi run test-invariants
-
-These were the part of the port's differential suite that never needed the Rust oracle: each one
-pins two of this library's own code paths to each other, or a decoder to its own definition. The
-differential suite went away at cut-over -- it compared against an implementation that no longer
-exists -- but these kept their value and so were carried over.
-
-What they are good for is the failure the h5 comparison cannot see. `test_h5.py` checks the
-gradients and the ADC/excitation times against Pulseq's own files; it says nothing about whether
-the sorted and unsorted samplers still agree, whether the flat k-space still matches the
-per-event one, or whether `DsvSet` still lands where the `.seq` says it should. Those are exactly
-the pairs a performance change moves one half of -- and the allocation work in `fe2413c` touched
-four of them.
-
-See `tests/conftest.py` for how the corpus is found.
+Covers sorted versus unsorted sampling, flat versus per-event k-space and .seq
+versus DSV outputs. Dataset discovery is in conftest.py.
 """
 
 import functools
@@ -61,11 +48,7 @@ def _axes(seq):
 
 
 def test_corner_times_roundtrip_exactly(name):
-    """Corner times survive the float-seconds hop that the Python boundary forces on us.
-
-    Everything downstream assumes the picosecond grid is recoverable from the seconds the API
-    hands out. If that stopped being true, delay sweeps would quietly stop being reproducible.
-    """
+    """Corner times round-trip between float seconds and integer picoseconds."""
     seq = _seq(name)
     for ax in _axes(seq):
         ct, _ = seq.gradient(ax)
@@ -75,11 +58,7 @@ def test_corner_times_roundtrip_exactly(name):
 
 
 def test_picosecond_times_are_taken_verbatim(name):
-    """Sampling at int64 picoseconds equals sampling at the equivalent float seconds.
-
-    The exact path exists for delay sweeps; this checks it is wired to the same arithmetic rather
-    than to a parallel implementation of it.
-    """
+    """Integer picosecond and equivalent float-second queries agree."""
     seq = _seq(name)
     times = _query_times(seq)[:10_000]
     times_ps = s2w.ps_from_secs(times)
@@ -95,11 +74,7 @@ def test_picosecond_times_are_taken_verbatim(name):
 
 
 def test_unsorted_path_matches_sorted_path(name):
-    """`sample_at` (binary search) and `sample_at_sorted` (forward sweep) agree.
-
-    The sweep is only taken when times are non-decreasing, so the two exist side by side and an
-    optimisation of either could silently move only one.
-    """
+    """Binary searches and the sorted sweep return the same values."""
     seq = _seq(name)
     times = _query_times(seq)[:10_000]
     for ax in _axes(seq):
@@ -111,11 +86,7 @@ def test_unsorted_path_matches_sorted_path(name):
 
 
 def test_moments_sorted_path_matches_pointwise(name):
-    """`moments_at_sorted` (one forward cursor) agrees with repeated `moment_to`.
-
-    The batched form is what k-space actually runs through, and it carries all the cursor
-    bookkeeping; `moment_to` is the simple definition. They must not diverge.
-    """
+    """The moment sweep matches independent point queries."""
     seq = _seq(name)
     times = _query_times(seq)[:5_000]
     checked = 0
@@ -131,12 +102,7 @@ def test_moments_sorted_path_matches_pointwise(name):
 
 
 def test_flat_path_matches_per_event_path(name):
-    """The flat and per-event k-space paths agree with each other.
-
-    Two implementations of the same quantity: `adc_kspace_flat` fills one array in place while
-    `adc_kspace` builds a trace per event. This is the test that would have caught it if the
-    in-place rewrite had got an offset wrong.
-    """
+    """Flat and per-event k-space agree exactly, including event boundaries."""
     c = _seq(name)
     t, kx, ky, kz, off = c.adc_kspace_flat()
     per = c.adc_kspace()
@@ -150,11 +116,7 @@ def test_flat_path_matches_per_event_path(name):
 
 
 def test_dense_sampling_matches_the_corners(name):
-    """A uniform-raster sample equals interpolating the corner form at the same times.
-
-    `gradients_dense` goes through the sampler; this reconstructs it from the published corners.
-    Both are piecewise-linear interpolation of the same waveform, so they agree exactly.
-    """
+    """Dense output equals interpolation of the corners at the same times."""
     seq = _seq(name)
     t, gx, gy, gz = seq.gradients_dense(1e-3)
     for ax, want in zip("xyz", (gx, gy, gz)):
@@ -218,17 +180,7 @@ def dsv_kind(request):
 
 @pytest.mark.skipif(not DSV_PER_KIND, reason="no .dsv channels in the corpus")
 def test_dsv_corners_reproduce_the_dense_samples(dsv_kind):
-    """Sampling the decoded corners at `(k+0.5)*raster` reproduces the dense samples exactly.
-
-    The decoder's own invariant, and the claim that justifies never building the dense array: a run
-    of equal deltas is a straight line, and interpolating a line gives the line back.
-
-    Resampled through `PiecewiseLinear`, not `np.interp`, and that matters: `PiecewiseLinear`
-    interpolates from integer picosecond times, exactly as `dense()` does internally, so this can
-    assert bit equality. `np.interp` works in float seconds and disagrees in the last few digits
-    wherever the slope is steep, which would force a tolerance and turn a sharp test into a vague
-    one.
-    """
+    """Decoded DSV corners reproduce the dense output exactly at raster centers."""
     try:
         dense, raster, _ = s2w.read_dsv(dsv_kind)
     except ValueError:
@@ -246,13 +198,7 @@ def test_dsv_corners_reproduce_the_dense_samples(dsv_kind):
 
 @functools.lru_cache(maxsize=None)
 def _peak_k(nm):
-    """Peak |k| per axis from the `.seq` route and from the DSV route, or None if either is absent.
-
-    Returns
-    -------
-    tuple of (ndarray, ndarray), or None
-        ``(seq_peaks, dsv_peaks)``, each ``[|kx|, |ky|, |kz|]`` in 1/m.
-    """
+    """Peak absolute k-space per axis from the .seq and DSV sources."""
     paths = dsv_paths(nm)
     if paths is None:
         return None
@@ -269,26 +215,10 @@ def _peak_k(nm):
 
 
 def test_seq_and_dsv_kspace_agree(name):
-    """The same k-space, reached two independent ways, peaks at the same magnitude.
+    """Sequence and simulator DSV peak k-space agree within 0.1% of full scale.
 
-    The `.seq` route expands Pulseq blocks; the DSV route decodes what the scanner actually played.
-    Different files, different arithmetic, same physics -- so this is a tolerance check, not an
-    exact one, and it is the only test here that would notice if the DSV frame, the ~1020 us
-    Siemens lead-in or the mT/m -> Hz/m conversion went wrong, since each of those shifts one route
-    and not the other.
-
-    The threshold is 0.1%, which is tight, and it is tight because the measured agreement is
-    0.0091% at worst across the corpus (`cones`, `girf` and `sync_osc` are exact to the printed
-    digits; `epi` differs by 0.0091% on kx). It can be this tight because the corpus's DSVs are
-    `SimulationProtocol_*` files from the Siemens sequence simulator rather than scope traces --
-    so what this compares is the frame, the units and the lead-in, not gradient-system fidelity. A
-    real measured DSV would not pass at 0.1%, and if one is ever added to the corpus this threshold
-    is the thing to revisit, not the code.
-
-    Calibrated against a deliberately wrong gamma on `cones`, to check it is not vacuous: a 0.1%
-    error lands on the bar, 0.5% and 2% are caught. So this detects a scale error of roughly 0.2%
-    upward, which covers every units mistake worth worrying about.
-    """
+    The corpus differs by at most 0.0091%. This checks units and time alignment;
+    measured scanner traces may need a different tolerance."""
     pair = _peak_k(name)
     if pair is None:
         pytest.skip("dataset has no DSV set, or no ADC samples on one route")
@@ -305,11 +235,7 @@ def test_seq_and_dsv_kspace_agree(name):
 
 
 def test_dsvset_and_sequence_expose_the_same_interface():
-    """`Sequence` and `DsvSet` present the same WaveformSource API.
-
-    The claim that a DSV+INF set is a drop-in for a `.seq`. Both register their shared surface from
-    one template in the bindings, so this mainly guards against someone splitting them again.
-    """
+    """Sequence and DsvSet expose every shared sampling method."""
     shared = {
         "gradient", "duration", "adc_events", "adc_events_meta", "triggers", "sampler",
         "adc_specs", "adc_excitations", "trigger_specs", "adc_gradient_samples", "adc_kspace",

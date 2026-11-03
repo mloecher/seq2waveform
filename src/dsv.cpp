@@ -34,8 +34,7 @@ std::pair<PiecewiseLinear, std::size_t> rle_to_piecewise(const std::vector<std::
         std::size_t reps = 1;
         if (i + 2 < n_rle && rle[i + 1] == rle[i]) {
             d = rle[i];
-            // Rust: `(rle[i + 2] + 2).max(0) as usize`. The clamp keeps a corrupt count from
-            // overflowing on the way in, as in the shape decoder.
+            // Clamp before adding two to avoid overflow in a malformed repeat count.
             std::int64_t r = rle[i + 2];
             constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
             r = r > kMax - 2 ? kMax - 2 : r;
@@ -98,7 +97,7 @@ double def_f64(const std::map<std::string, std::string>& defs, const char* key) 
     return out;
 }
 
-/// Rust's `{:?}` on a string, for the bad-value-line message. See parser.cpp's copy.
+/// Quote a malformed value, escaping special characters.
 std::string debug_quote(std::string_view s) {
     std::string out = "\"";
     for (const char c : s) {
@@ -129,11 +128,7 @@ std::string debug_quote(std::string_view s) {
 }  // namespace
 
 std::vector<double> DsvChannel::dense() const {
-    // One forward sweep over the corners, in fixed-size chunks of query times, rather than a
-    // `value_at` binary search per sample. The sample times are strictly increasing, so the sweep
-    // is the right shape; on `cones` GRX that is 63.5 M samples over 2.6 M corners, where the
-    // searches cost ~21 comparisons each. Chunking keeps the times buffer at 64 KiB instead of
-    // materialising 508 MB of them.
+    // Sample in chunks to bound temporary time storage while using the sorted sweep.
     constexpr std::size_t kChunk = 8192;
     std::vector<double> out(num_samples, 0.0);
     std::vector<Ps> times(kChunk);
@@ -156,11 +151,9 @@ DsvChannel read_dsv_text(std::string_view text) {
     // the delta stream regrows a dozen times on a 23 MB channel; with it, one allocation.
     rle.reserve(static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n')));
 
-    // Split on '\n' in place rather than with std::getline, which allocates and copies a
-    // std::string per line -- a DSV channel is one integer per line and millions of lines long, so
-    // that was most of the read. Same segmentation as parse_text.
+    // Split the buffer in place to avoid allocating a string per value line.
     std::size_t pos = 0;
-    bool done = false;  // the `;` terminator in [VALUES] ends the read, as Rust's `break` does
+    bool done = false;  // stop at the [VALUES] terminator
     while (!done && pos < text.size()) {
         const std::size_t nl = text.find('\n', pos);
         const std::size_t stop = nl == std::string_view::npos ? text.size() : nl;
@@ -222,8 +215,7 @@ DsvChannel read_dsv_text(std::string_view text) {
 }
 
 DsvChannel read_dsv_channel(std::istream& in) {
-    // Read the whole stream in 64 KiB blocks, then decode in place -- the same trade the `.seq`
-    // and INF readers make: holding one channel costs far less than a per-line allocation.
+    // Buffer the stream, then parse without copying individual lines.
     std::string text;
     char buf[1 << 16];
     while (in.read(buf, sizeof buf) || in.gcount() > 0) {

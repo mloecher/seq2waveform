@@ -1,8 +1,4 @@
-// Core tests for Ps and PiecewiseLinear, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/{time,pwl}.rs. Keeping them in step is the cheapest evidence that the
-// port preserved the numerics.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for picosecond arithmetic, interpolation and integration.
 
 #include <cmath>
 #include <cstdio>

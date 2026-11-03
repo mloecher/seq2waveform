@@ -1,18 +1,5 @@
-// Core tests for waveform expansion, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/waveform.rs, SEQ included verbatim.
-//
-// The two heaviest checks are worth knowing about:
-//
-// * `resample_jump_is_exact_vs_bruteforce` re-derives the DSV resampling the slow, obvious way --
-//   value_at at every raster center, then the same collinear drop -- and demands the fast path's
-//   segment-skipping jump produce the identical result. It is the only thing standing between the
-//   jump and a silently wrong waveform on long flats.
-// * `dsv_mode_reads_zero_outside_the_channel` is a regression test for a bug fixed on the Rust
-//   side while this port was underway: the kept center nearest each end sits half a raster inside
-//   the first/last ramp, so without an explicit zero center beyond them the channel clamped to a
-//   non-zero value before its first event and after its last.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for waveform expansion, including DSV resampling against a brute-force
+// reference and zero values outside the gradient channel.
 
 #include <cmath>
 #include <cstdio>

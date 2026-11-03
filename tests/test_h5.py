@@ -1,31 +1,8 @@
-"""Ground truth: the library against Pulseq's own reference `.h5`.
+"""Compare waveforms and event times with Pulseq reference .h5 files.
 
-Run:  pixi run test-h5
-
-This is the suite that does not depend on our own arithmetic being right. The `.h5` is a dump of
-Pulseq's own `waveforms_and_times()` -- `mr.Sequence.waveforms_and_times`, which in Pulseq 1.5.1
-lives in `matlab/+mr/@Sequence/Sequence.m` -- run on the same `.seq`. That makes it an outside
-answer, which is why it is the one to run after touching a waveform, and why it survived the
-cut-over from the port's differential suite unchanged.
-
-The datasets map onto that function's outputs one for one, called with `appendRF` set:
-
-    [wave_data, tfp_excitation, tfp_refocusing, t_adc, fp_adc, pm_adc] = waveforms_and_times(true)
-
-    gx, gy, gz   wave_data{1:3}, as (time_s, grad_Hz_per_m); MATLAB's 2xN, transposed
-    rf           wave_data{4}, present only because appendRF was set
-    excitation   tfp_excitation -- the "tfp" is time, freq, phase
-    adc          t_adc, fp_adc and pm_adc side by side
-
-It is a tolerance comparison (1e-4 relative), not an exact one: Pulseq and this library are
-independent implementations, not bit-compatible.
-
-`test_dsv_gradients_match_h5` is the other half of the project's actual question -- that what the
-scanner played matches what Pulseq asked for -- and is the only test here that reads the DSV side.
-It came from the Rust repo's `scripts/test_datasets.py`, whose other three tests are the three
-above it, already present.
-
-See `tests/conftest.py` for how the corpus is found.
+The references contain waveforms_and_times(true) output: gradient/RF traces,
+excitation metadata and ADC times/frequency/phase. Comparisons use relative
+tolerance 1e-4. DSV comparisons run when matching exports are available.
 """
 
 import functools
@@ -80,12 +57,7 @@ def test_gradients_match_h5(name):
 
 
 def test_excitation_times_match_h5(name):
-    """Excitation centers match the h5's `/excitation`.
-
-    Pulseq routes both `excitation` and `undefined` pulses into that dataset while this port keeps
-    the real use, so the comparison has to union the two -- the one place that deliberate
-    divergence has to be undone to compare at all.
-    """
+    """Match Pulseq excitation centers, including its grouping of undefined RF uses."""
     seq = _seq(name)
     exc = np.sort(
         np.array([c for c, _, _, u in seq.rf_events() if u in ("excitation", "undefined")])
@@ -109,21 +81,7 @@ def test_adc_times_match_h5(name):
 
 
 def test_dsv_gradients_match_h5(name):
-    """The Siemens DSV gradient agrees with the Pulseq h5 -- the project's actual question.
-
-    The two live in different frames. The DSV is what the scanner played, in mT/m on a 10 us grid
-    whose samples sit at interval centers, starting after an INF-encoded lead-in. The h5 is what
-    Pulseq asked for, in Hz/m at t=0. So the h5 is converted with the Siemens gamma and shifted by
-    the lead-in, and the two are compared on the DSV's own grid.
-
-    The lead-in comes from the INF (the start of event block 1), never from a fit -- a fitted shift
-    would absorb exactly the error this test exists to find. The assertion on its magnitude is
-    there because a wrong lead-in otherwise shows up only as a small amplitude mismatch.
-
-    Compared on the 10 us DSV grid rather than the h5's: the h5 carries extra 5 us corners from
-    Pulseq's `restoreAdditionalShapeSamples`, which is reconstruction detail Siemens never had, so
-    comparing there would hold the scanner to a resolution it was never given.
-    """
+    """Compare DSV gradients to Pulseq after accounting for units and Siemens lead-in."""
     dsv = dsv_dir(name)
     if dsv is None:
         pytest.skip("dataset has no dsv/ folder")

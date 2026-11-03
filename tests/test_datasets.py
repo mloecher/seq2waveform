@@ -1,14 +1,6 @@
-"""Guards on dataset discovery itself.
+"""Check that bundled datasets are found and match any external corpus copies.
 
-Every other module here skips when it finds no data, which is the right behaviour and also the
-one way this suite can go green having checked nothing. The bundled datasets exist so that cannot
-happen: they are committed, so they are always there, so a skip means a bug in the resolution and
-not a missing corpus. That makes the first test below the floor the whole suite stands on -- it is
-the only one that asserts data was found rather than skipping for want of it.
-
-The second guards the duplication. `tests/data/` holds copies of two corpus datasets, and the
-committed snapshots are generated from the corpus, so a corpus file regenerated without its copy
-being refreshed would pass locally and fail only on CI.
+These tests fail on missing bundled data rather than silently skipping.
 """
 
 import pytest

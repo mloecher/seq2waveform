@@ -1,12 +1,4 @@
-// Core tests for DsvSet as a WaveformSource.
-//
-// The Rust `dsv.rs` has no unit tests for its `impl WaveformSource for DsvSet` block -- the parity
-// suite covers it on real data -- so these have no one-for-one counterpart. They pin the pieces
-// that are easy to get wrong and that real-data parity would catch only indirectly: the mT/m to
-// Hz/m conversion, the deliberate zeros (ADC freq/phase, trigger channel), the degrees-to-radians
-// phase, and the duration being the span of the gradient channels rather than of any one of them.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for DsvSet units, event metadata and the shared sampling interface.
 
 #include <cmath>
 #include <cstdio>
@@ -163,7 +155,7 @@ void excitation_phase_is_converted_to_radians() {
 }
 
 void the_sampler_pipeline_runs_on_a_dsv_set() {
-    // The point of step 7: the shared WaveformSource helpers work unchanged on a DsvSet.
+    // Exercise shared sampling helpers on a DSV source.
     const s2w::DsvSet set = make_set(s2w::kScanGamma);
     const s2w::Sampler s = set.sampler();
     const s2w::Trace g = s.gradients({s2w::Ps::from_secs(5e-5)});

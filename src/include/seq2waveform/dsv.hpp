@@ -1,22 +1,7 @@
-// Reader for Siemens DSP-Simulator `.dsv` waveform files.
-//
-// Layout (per channel):
-//
-//     [DEFINITIONS]
-//     HORIDELTA=10.000000      <- sample spacing, microseconds
-//     VERTFACTOR=1000000.0     <- divide the cumulative sum by this -> physical units
-//     VERTUNITNAME=mT/m
-//     [VALUES]
-//     0                        <- integer DELTAS, run-length encoded
-//     ...
-//
-// The `[VALUES]` body is the waveform's derivative, run-length encoded (`d, d, k` = "`d` repeated
-// `k+2` times"). It is decoded straight to piecewise-linear corners -- a run of equal deltas is a
-// constant-slope segment, so only slope changes are kept (plus the first and last sample), and the
-// dense array is never materialized. `DsvChannel::dense` reconstructs per-sample values on demand.
-//
-// Ported from the Rust `dsv.rs`. `DsvSet` (the whole measurement set as a WaveformSource) needs
-// the INF reader and arrives at port step 7.
+// Siemens DSP-Simulator .dsv channel reader.
+// HORIDELTA is the sample spacing in microseconds; VERTFACTOR scales stored integers.
+// [VALUES] holds run-length-encoded deltas: d, d, k means d repeated k + 2 times.
+// Decoding keeps slope changes as corners; dense samples are reconstructed on demand.
 
 #pragma once
 

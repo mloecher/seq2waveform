@@ -1,16 +1,11 @@
-"""Time the public API on the real datasets.
+"""Time the public API on real datasets. Each call recomputes from parsed data.
 
-Nothing is cached internally, so every call below recomputes from the parsed blocks -- which is
-what makes repeated calls honest, and what makes these numbers the cost of the work itself.
-
-For a breakdown with no Python boundary in the way, build `tests/bench_expand.cpp` instead
-(`pixi run test-cpp` builds it). Use that one before blaming the bindings for a slow call.
-
-Usage
------
+Usage:
     pixi run bench
     pixi run python scripts/bench.py --only cones girf --repeats 8
     pixi run python scripts/bench.py --dsv
+
+For native C++ timings, use tests/bench_expand.cpp.
 """
 
 from __future__ import annotations

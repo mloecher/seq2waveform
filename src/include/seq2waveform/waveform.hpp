@@ -1,17 +1,5 @@
-// Waveform expansion: turn a parsed Sequence into explicit waveforms (Pulseq's
-// `waveforms_and_times`).
-//
-// Walk the blocks accumulating time, resolve each block's events, and emit gradient corners, RF
-// pulses, ADC times and triggers. The gradient path covers trapezoid corners,
-// `restoreAdditionalShapeSamples` for centers-raster arbitrary shapes, and the cross-block stitch
-// (a forced ramp to and from zero across gaps).
-//
-// Divergence from Pulseq: RF keeps its real `use` -- undefined pulses are NOT folded into
-// excitation. Pulseq's own h5 routes both into /excitation, so an h5 comparison has to union them.
-//
-// Ported from the Rust `waveform.rs`. Rust puts these on `Sequence` with an `impl` block in this
-// module; C++ cannot, so they are free functions taking `const Sequence&` and `model.hpp` stays
-// free of waveform concerns.
+// Expand sequence blocks into gradient corners, RF pulses, ADC times and triggers.
+// RF use is preserved: undefined pulses are not relabelled as excitations.
 
 #pragma once
 
@@ -36,7 +24,7 @@ struct RfPulse {
     RfUse use = RfUse::Undefined;
 };
 
-/// RF event metadata without the complex waveform -- Rust's `(Ps, f64, f64, RfUse)` tuple.
+/// RF metadata without the complex waveform.
 struct RfMeta {
     Ps center;
     double freq = 0.0;
@@ -74,8 +62,7 @@ Waveforms waveforms(const Sequence& seq);
 
 // --- focused single-output walks (skip building everything else) ---------
 
-/// One gradient channel (Hz/m piecewise-linear). `axis` is 'x', 'y' or 'z'; anything else gives an
-/// empty channel, as in Rust.
+/// One gradient channel in Hz/m. Axes are 'x', 'y', 'z'; other values return an empty channel.
 PiecewiseLinear gradient(const Sequence& seq, char axis);
 
 /// ADC sample times only, flattened across events. Avoids building RF and gradients.

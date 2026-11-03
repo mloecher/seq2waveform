@@ -12,8 +12,7 @@ constexpr double kPi = 3.14159265358979323846;
 
 double to_radians(double degrees) { return degrees * (kPi / 180.0); }
 
-/// An empty channel, returned for an unknown axis so the behaviour matches Rust's
-/// `_ => return PiecewiseLinear::default()`.
+/// An unknown axis returns an empty channel.
 const DsvChannel& empty_channel() {
     static const DsvChannel empty;
     return empty;
@@ -54,8 +53,7 @@ PiecewiseLinear DsvSet::gradient(char axis) const {
         return PiecewiseLinear{};
     }
     const DsvChannel& ch = channel(axis);
-    // Hz/m = mT/m * 1e-3 (T/m) * gamma (Hz/T). Formed as one factor and applied per value, in
-    // that order, so the rounding matches Rust's.
+    // Convert mT/m to Hz/m using one scale factor.
     const double factor = gamma_ * 1e-3;
     PiecewiseLinear out;
     out.t = ch.waveform.t;
@@ -119,8 +117,7 @@ std::vector<std::tuple<Ps, double, double>> DsvSet::excitations() const {
                      "symmetric pulses.\n",
                      n_off, dt * 1e6, max_off * 1e6, dt * 1e6);
     }
-    // Sort by center only, and stably, so pulses sharing a center keep INF order -- Rust's
-    // `sort_by_key(|x| x.0)` is a stable sort on the same key.
+    // Preserve INF order for pulses with the same center.
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
         return std::get<0>(a) < std::get<0>(b);
     });

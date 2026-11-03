@@ -1,12 +1,4 @@
-// Core tests for the model and the .seq parser, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/{model.rs,parser/mod.rs}, MINI_SEQ included verbatim. Keeping them in
-// step is the cheapest evidence that the port preserved the reader.
-//
-// The scanning tests at the end have no Rust counterpart: they pin the behaviour that Rust gets
-// from `str::parse` and that C++ had to reproduce by hand (whole-token match, a leading '+',
-// locale independence, and a saturating float-to-int cast).
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for the sequence model, parser errors and numeric scanning.
 
 #include <cmath>
 #include <cstdint>
@@ -190,8 +182,7 @@ void parse_error_carries_the_source_line() {
 }
 
 void blank_and_comment_lines_still_count_toward_the_line_number() {
-    // Rust enumerates lines before skipping blanks and comments, so the reported number is the
-    // real file line. Easy to get wrong by counting only content lines.
+    // Source line numbers include blanks and comments.
     const std::string bad = "# a comment\n\n[TRAP]\n\n# another\n1 100 x 6000 200 0\n";
     try {
         parse_str(bad);
@@ -238,16 +229,14 @@ void an_unknown_section_is_skipped() {
 void scanning_matches_rust_parse() {
     double d = 0.0;
     check(s2w::parse_f64("1e-05", d) && d == 1e-5, "exponent form");
-    check(s2w::parse_f64("+1.5", d) && d == 1.5, "a leading + is accepted, as Rust does");
+    check(s2w::parse_f64("+1.5", d) && d == 1.5, "a leading + is accepted");
     check(s2w::parse_f64("-32000", d) && d == -32000.0, "negative");
     check(!s2w::parse_f64("1.5x", d), "trailing characters are a failure, not a partial parse");
     check(!s2w::parse_f64("", d), "an empty token fails");
     check(!s2w::parse_f64("x", d), "a non-number fails");
     check(!s2w::parse_f64(" 1.5", d), "untrimmed input fails (callers trim first)");
 
-    // Out of range. Rust saturates: "1e999" parses to +inf, "1e-999" to 0.0. The three standard
-    // libraries all disagree here (WG21 P4168 exists because of it), which is part of why doubles
-    // go through fast_float instead.
+    // Floating-point overflow gives infinity; underflow gives zero.
     check(s2w::parse_f64("1e999", d) && std::isinf(d) && d > 0, "overflow saturates to +inf");
     check(s2w::parse_f64("-1e999", d) && std::isinf(d) && d < 0, "overflow saturates to -inf");
     check(s2w::parse_f64("1e-999", d) && d == 0.0, "underflow saturates to 0");
@@ -263,7 +252,7 @@ void scanning_matches_rust_parse() {
 void saturating_cast_matches_rust() {
     check(s2w::saturating_i64(3.7) == 3, "truncates toward zero");
     check(s2w::saturating_i64(-3.7) == -3, "truncates toward zero when negative");
-    check(s2w::saturating_i64(std::nan("")) == 0, "NaN becomes 0, as Rust's `as i64` does");
+    check(s2w::saturating_i64(std::nan("")) == 0, "NaN becomes 0");
     check(s2w::saturating_i64(1e300) == std::numeric_limits<std::int64_t>::max(), "saturates high");
     check(s2w::saturating_i64(-1e300) == std::numeric_limits<std::int64_t>::min(), "saturates low");
 }

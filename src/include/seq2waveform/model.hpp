@@ -1,14 +1,5 @@
-// In-memory representation of a parsed Pulseq sequence (file format v1.4/1.5).
-//
-// The `[BLOCKS]` table is the spine: each block references events by id into the per-type
-// libraries (`rf`, `gradients`, `adc`, ...). Ids of `0` mean "no event". All values are stored in
-// canonical units: seconds for time, Hz for RF amplitude, Hz/m for gradient amplitude, radians
-// for phase.
-//
-// Ported from the Rust `model.rs`. Two deliberate differences, neither observable:
-// the libraries are `std::map` where Rust uses `HashMap` (same contents, and ordered iteration
-// makes a parity mismatch reproducible instead of shuffling between runs), and `Gradient` is a
-// `std::variant` where Rust has an enum with payloads.
+// Parsed Pulseq sequence data. Blocks reference event libraries by id; 0 means no event.
+// Units: seconds, Hz for RF, Hz/m for gradients, radians for phase.
 
 #pragma once
 
@@ -143,10 +134,8 @@ enum class GradMode {
     /// Connect the stored center samples directly (with `first`/`last` at the edges). Smooths
     /// arbitrary shapes to the DSV, but leaves trapezoids sharp.
     Centers,
-    /// Resample the whole channel onto the raster centers and keep only corners = the Siemens DSV
-    /// / commanded waveform: rounds trap corners *and* smooths arbitrary shapes into one
-    /// representation. Caveat: whether traps are truly rounded is unsettled -- but this is what
-    /// the DSV records, so it is the right target when comparing against one.
+    /// Resample the whole channel at raster centers to match the DSV representation.
+    /// Rounds trapezoid corners and smooths arbitrary shapes.
     Dsv,
 };
 

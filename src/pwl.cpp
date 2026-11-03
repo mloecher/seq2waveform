@@ -5,8 +5,7 @@
 namespace s2w {
 namespace {
 
-/// Index of the first corner strictly past `at` -- the C++ spelling of Rust's
-/// `partition_point(|x| x <= at)`. Keeping these identical is what makes the ports agree.
+/// Index of the first corner strictly after the query time.
 std::size_t first_past(const std::vector<Ps>& t, Ps at) {
     return static_cast<std::size_t>(std::upper_bound(t.begin(), t.end(), at) - t.begin());
 }
@@ -23,10 +22,7 @@ double lerp_in_segment(const PiecewiseLinear& w, std::size_t j, Ps at) {
     return v0 + (v1 - v0) * at.frac_between(t0, t1);
 }
 
-/// One step of the forward sweep: advance the cursor `j` to the segment holding `at`, then
-/// interpolate. Shared by the two `sample_at_sorted` forms so there is one copy of the rule; the
-/// two differ only in where they put the answer, and the vector form must not pre-fill its output
-/// (zero-filling it and overwriting cost `gradients_dense` 144 MB of memset on `cones`).
+/// Advance the sorted cursor to the query segment and interpolate.
 double sweep_value(const PiecewiseLinear& w, std::size_t n, std::size_t& j, Ps at) {
     if (at <= w.t[0]) {
         return w.v[0];
@@ -126,10 +122,7 @@ double PiecewiseLinear::integral(Ps t0, Ps t1) const {
     if (n == 0 || t1 == t0) {
         return 0.0;
     }
-    // Walk corner to corner adding each trapezoid area, with (a, va) the running left edge.
-    // Starting at `first_past(t0)` rather than at 0 and skipping: the corners are sorted, so the
-    // skipped prefix is exactly what a binary search finds, and scanning it instead made every
-    // call O(corners) -- 2.7 M iterations per integral on `cones`, however short the span.
+    // Start at the first corner after t0, then sum trapezoids over the interval.
     double area = 0.0;
     Ps a = t0;
     double va = value_at(t0);
@@ -158,6 +151,10 @@ std::vector<double> PiecewiseLinear::cumulative_moment() const {
 }
 
 double PiecewiseLinear::moment_to(Ps at, const std::vector<double>& cum) const {
+    return moment_to(at, cum.data());
+}
+
+double PiecewiseLinear::moment_to(Ps at, const double* cum) const {
     const std::size_t n = t.size();
     if (n == 0 || at <= t[0]) {
         return 0.0;

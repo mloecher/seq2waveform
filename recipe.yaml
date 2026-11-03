@@ -1,17 +1,4 @@
-# Build seq2waveform into a local conda package, so a consuming project can install it as a normal
-# conda dependency instead of an editable path build (no rebuilds, no Windows .pyd locks).
-#
-# Two steps (chained by the `conda-build` pixi task):
-#   1. `pixi run build-wheel` produces a wheel with the toolchain that already works here
-#      (scikit-build-core + the system MSVC).
-#   2. this recipe just installs that wheel -- no C++ compiler in the conda build environment.
-#
-# The one third-party dependency, fast_float, is vendored under extern/, so neither step needs
-# network access. That is the whole reason it is vendored rather than fetched by CMake: a conda
-# build phase is offline, and so is an sdist build on a user's machine.
-#
-# Run:  pixi run conda-build      -> writes a package under ./output (a local channel).
-
+# Wrap the wheel from pixi run build-wheel into a local conda package.
 context:
   version: "0.1.0"
 
@@ -20,12 +7,10 @@ package:
   version: ${{ version }}
 
 source:
-  # the wheel(s) produced by `pixi run build-wheel`
   path: dist
 
 build:
   number: 0
-  # platform-specific: the wheel carries a compiled extension for this Python ABI.
   script:
     - pip install --no-deps --no-index --find-links . seq2waveform
 
@@ -42,17 +27,14 @@ tests:
       imports:
         - seq2waveform
   - script:
-      # Beyond importing: check the extension actually computes. Catches a wheel that imports but
-      # was built against the wrong ABI or with a broken core.
       - python -c "import numpy as np, seq2waveform as s; w = s.PiecewiseLinear(np.array([0.0, 1.0]), np.array([0.0, 2.0])); assert w.value_at(0.5) == 1.0"
     requirements:
       run:
         - numpy
 
 about:
-  summary: Read Pulseq .seq and Siemens .dsv files into waveform arrays, with k-space sampling.
+  summary: Read Pulseq .seq and DSV files into waveform arrays, with k-space sampling.
   license: MIT
-  # Both notices, as in the wheel: fast_float is compiled into the binary this package wraps.
   license_file:
     - LICENSE
     - extern/fast_float/LICENSE-MIT

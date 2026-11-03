@@ -1,12 +1,5 @@
-// Core tests for the Siemens `.dsv` reader, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/dsv.rs, with the minimal file included verbatim.
-//
-// The property worth stating: the `[VALUES]` body is a run-length-encoded *derivative*, decoded
-// straight to piecewise-linear corners without ever building the dense array. Sampling those
-// corners at `(k+0.5)*raster` must reproduce `cumsum(deltas)/VERTFACTOR` exactly -- linear
-// interpolation of a line is the line -- and that round-trip is the decoder's own test.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for DSV decoding. Sampling the decoded corners must reproduce the
+// cumulative sum of the stored deltas, scaled by VERTFACTOR.
 
 #include <cmath>
 #include <cstdio>

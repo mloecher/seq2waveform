@@ -1,29 +1,9 @@
-"""Shared test-dataset discovery, over two sources.
+"""Find datasets in the external corpus or bundled tests/data directory.
 
-A dataset is a directory holding `<name>.seq` and, depending on the source, `<name>.h5` and a
-`dsv/` export.
-
-**The corpus** is the full set, ~1.6 GB, and lives outside the repo, so where it is has to be
-discovered rather than assumed. Resolution order, first hit wins:
-
-1. ``S2W_TESTDATA``, if set (relative values resolve against the project root, not the cwd).
-2. ``testdata/`` in this repo.
-3. ``../seq2waveform/testdata`` -- the Rust checkout that owned the corpus before the C++ port
-   replaced it. Kept as a fallback so a checkout that has not moved the corpus yet still runs;
-   drop this once the Rust repo is gone.
-
-**The bundled set** is `tests/data/`: two datasets committed to the repo, so a fresh clone and a
-CI runner check real numbers instead of skipping everything. It carries the `.seq` and the Pulseq
-`.h5` -- which is what makes `test_h5.py`, the only outside answer in the suite, run anywhere --
-but no DSV export. Those files are a vendor simulator's output and stay out of a public repo;
-`test_dsv.cpp` and `test_inf.cpp` cover those readers from minimal files written to the format.
-
-The corpus wins for a name both sources hold, since it also has the DSV export. So the bundled
-files change nothing about a run that has the corpus.
-
-A run that reports *skipped* checked less than it looks like, which is what `test_datasets.py`
-is for: it asserts the bundled set was found, so a skip there is a resolution bug and not a
-missing corpus.
+Search S2W_TESTDATA (relative to the project root), ./testdata, then
+../seq2waveform/testdata. The corpus takes priority over bundled files with the
+same name because it also holds DSV exports. Bundled .seq/.h5 files let the
+reference tests run without the corpus; DSV reader unit tests use synthetic data.
 """
 
 import os

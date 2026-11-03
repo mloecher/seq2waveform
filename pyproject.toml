@@ -2,19 +2,11 @@
 name = "seq2waveform"
 version = "0.1.0"
 description = "Read Pulseq .seq and DSV files into waveform arrays, with k-space sampling."
-# The PyPI long description. A version's metadata is frozen once uploaded, so this is the page
-# that release carries for good.
 readme = "README.md"
-# No upper bound: nanobind tracks new CPython releases, which is half the point of the port.
 requires-python = ">=3.10"
 dependencies = ["numpy"]
-# MIT, as an SPDX expression (PEP 639) rather than the deprecated license table or the
-# `License ::` classifier, which must not be combined with one. It is what puts LICENSE in the
-# sdist and in the wheel's .dist-info, and the license on the PyPI page.
 license = "MIT"
-# fast_float's notice ships too: it is vendored under extern/ and compiled into the binary, so
-# the wheel is a copy of it and its MIT terms ask that the notice travel along. It is MIT as
-# well -- see extern/fast_float/README.md -- so the expression above covers the whole wheel.
+# Include the vendored dependency notice in distributions.
 license-files = ["LICENSE", "extern/fast_float/LICENSE-MIT"]
 
 [project.urls]
@@ -22,42 +14,25 @@ Source = "https://github.com/mloecher/seq2waveform"
 Issues = "https://github.com/mloecher/seq2waveform/issues"
 
 [build-system]
-# Bounded above because a nanobind major is a migration, not a free upgrade: it owns the
-# generated glue and the .pyi writer. >=3.0 is what this has actually been built with
-# (pixi.lock pins 3.1.0); 2.x is untested. The bound does not hold back new CPython
-# support, which arrives in nanobind minors.
-# The 0.10 floor moved to 0.11: that is where the SPDX license expression above is understood.
+# SPDX metadata needs scikit-build-core 0.11; nanobind major upgrades need review.
 requires = ["scikit-build-core>=0.11", "nanobind>=3.0,<4"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
-# Release is already scikit-build-core's default; stated because it is the single most
-# consequential compile setting in the project and a silent default change would ship an
-# unoptimised wheel without anything failing.
 cmake.build-type = "Release"
 build-dir = ".scikit-build"
-# The package lives next to this file; CMake drops `_core` into it via install(TARGETS ...).
 wheel.packages = ["seq2waveform"]
 
 [tool.cibuildwheel]
-# cp314t is the free-threaded build. cibuildwheel v4 produces it without an enable flag, but
-# `cp314-*` does not match `cp314t-*`, so it has to be named. There is no cp313t: v4 removed the
-# experimental 3.13 free-threaded builds, and 3.14 is where free-threading became supported.
+# Free-threaded 3.14 must be selected separately.
 build = "cp310-* cp311-* cp312-* cp313-* cp314-* cp314t-*"
 skip = "*-musllinux_* *-manylinux_i686 *-win32"
 test-command = "python -c \"import numpy as np, seq2waveform as s; w = s.PiecewiseLinear(np.array([0.0, 1.0]), np.array([0.0, 2.0])); assert w.value_at(0.5) == 1.0\""
 
 [tool.cibuildwheel.macos]
-# Native only: the wheels workflow runs one job per architecture (macos-latest for arm64,
-# macos-15-intel for x86_64), so cibuildwheel's test-command runs for both. Listing both archs
-# here instead would cross-compile one of them, which cannot be imported and so cannot be tested.
 archs = ["auto"]
 
-# Per-arch deployment targets, because one value cannot be right for both: arm64 did not exist
-# before 11.0, and setting a lower target for it produces a wheel tagged for a system that cannot
-# run it. 10.14 rather than 10.13 on Intel because the C++17 library exceptions that live in the
-# platform's libc++ dylib (bad_variant_access and friends) are annotated as introduced there --
-# nothing here throws one any more, but the margin is free and the OS is from 2018.
+# Match deployment targets to each native runner architecture.
 [[tool.cibuildwheel.overrides]]
 select = "*-macosx_x86_64"
 environment = { MACOSX_DEPLOYMENT_TARGET = "10.14" }
@@ -68,10 +43,6 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.pytest.ini_options]
 markers = [
-  # Tests that need neither the corpus nor the bundled datasets, so they run anywhere -- a fresh
-  # clone, an unpacked sdist, CI. `pytest -m no_corpus` exits 5 ("no tests collected") if the
-  # selection ever matches nothing. CI runs the whole suite instead, where what keeps a green run
-  # from meaning "everything skipped" is tests/test_datasets.py.
   "no_corpus: runs without the test corpus",
 ]
 
@@ -84,68 +55,31 @@ python = "3.13.*"
 numpy = ">=2"
 pytest = "*"
 pip = "*"
-# Build toolchain. MSVC comes from the system Visual Studio install, as in gropt. `ninja` is
-# deliberately absent: without it CMake uses the Visual Studio generator, which finds MSVC
-# without needing vcvars on PATH.
+# Use the Visual Studio generator to find MSVC without vcvars; no Ninja dependency.
 cmake = ">=3.17"
 nanobind = ">=2.0"
 scikit-build-core = ">=0.10"
-# For `test-h5`, which checks the waveforms against Pulseq's own reference files. Dev-only --
-# it is not a runtime dependency of the package.
 h5py = "*"
 
 [tool.pixi.activation.env]
-# The test corpus: matched .seq / .h5 / .dsv per dataset, ~1.6 GB, so it lives outside the repo.
-# Relative values resolve against this project root. The default is a `testdata` directory here;
-# it still points at the old Rust checkout if you have not moved it yet. This is the full corpus,
-# not the two datasets committed under tests/data -- conftest.py searches both.
+# Relative to the project root; tests/data is the bundled fallback.
 S2W_TESTDATA = "testdata"
 
 [tool.pixi.tasks]
-# Editable install. Also regenerates seq2waveform/_core.pyi from the built module, so the stubs
-# can never drift from the bindings.
+# Also regenerates seq2waveform/_core.pyi.
 build = "python -m pip install --no-build-isolation -e ."
-# C++ core tests (ported from the Rust unit tests) via ctest. S2W_BUILD_MODULE=OFF so this
-# needs neither Python nor nanobind and does not rebuild the bindings -- `build` owns those,
-# and every other test task depends on it. No -DCMAKE_BUILD_TYPE here: --config Release covers
-# the multi-config generators, and CMakeLists.txt defaults the single-config ones, so passing it
-# would only make CMake warn that the variable went unused on Windows.
 test-cpp = "cmake -S . -B build-tests -DS2W_BUILD_TESTS=ON -DS2W_BUILD_MODULE=OFF && cmake --build build-tests --config Release && ctest --test-dir build-tests --output-on-failure -C Release"
-# The two datasets committed under tests/data: that discovery finds them, that no DSV export
-# slipped in with them, and that each copy still matches the corpus file the snapshots were
-# generated from. Everything else here skips when it finds no data; this is what says it did.
 test-datasets = { cmd = "pytest tests/test_datasets.py -v", depends-on = ["build"] }
-# Ground truth: the waveforms against Pulseq's own reference h5, at 1e-4. This is the check that
-# does not depend on our own arithmetic being right, so it is the one to run after touching a
-# waveform.
 test-h5 = { cmd = "pytest tests/test_h5.py -v", depends-on = ["build"] }
-# Internal invariants on the real datasets: the two sampling paths against each other, the flat
-# and per-event k-space against each other, the .seq and DSV routes to the same k-space. No
-# external reference, so these catch a refactor that moves one path and not its twin.
 test-invariants = { cmd = "pytest tests/test_invariants.py -v", depends-on = ["build"] }
-# Change detection on the real corpus: every output column against a committed digest. Replaces
-# what the differential suite did in practice -- noticing that a refactor moved a number -- for
-# the quantities nothing else covers on real data (triggers, RF metadata, ADC grouping, the INF
-# and DSV readers, the alternate gradient modes).
 test-golden = { cmd = "pytest tests/test_golden.py -v", depends-on = ["build"] }
-# Rewrite those snapshots. Only when the change in output is intended, and review the diff.
+# Only for intended output changes; review the snapshot diff.
 golden-update = { cmd = "python scripts/gen_golden.py", depends-on = ["build"] }
-# `load`: source dispatch, DSV channel discovery, and the dsv-by-default rule. Most of it builds
-# its own inputs, so it runs anywhere.
 test-load = { cmd = "pytest tests/test_load.py -v", depends-on = ["build"] }
-# The committed stub against what this build just generated. seq2waveform/_core.pyi is
-# regenerated by nanobind on every build and is committed so editors have the API without a build
-# first -- which only helps if it is current. This lives here rather than in CI because pixi.lock
-# pins the nanobind that writes it, so a diff means the bindings changed and the stub was not
-# re-committed, not that a nanobind release reformatted it. If it fires: review and commit.
+test-bindings = { cmd = "pytest tests/test_bindings.py -v", depends-on = ["build"] }
+# Run with the nanobind version pinned in pixi.lock.
 check-stub = { cmd = "git diff --exit-code -- seq2waveform/_core.pyi", depends-on = ["build"] }
-# Everything.
-test = { depends-on = ["test-cpp", "test-datasets", "test-h5", "test-invariants", "test-golden", "test-load", "check-stub"] }
-# Timings on the real datasets.
+test = { depends-on = ["test-cpp", "test-datasets", "test-h5", "test-invariants", "test-golden", "test-load", "test-bindings", "check-stub"] }
 bench = { cmd = "python scripts/bench.py", depends-on = ["build"] }
-# A redistributable wheel, for cibuildwheel to do per-platform or for the conda recipe to wrap.
 build-wheel = "python -m pip wheel --no-build-isolation --no-deps -w dist ."
-# Wrap that wheel into a conda package under ./output (a local channel). A consuming project can
-# then `pixi project channel add file:///D:/syncthing/dev_python/seq2waveform_cpp/output` and
-# `pixi add seq2waveform`. See recipe.yaml.
 conda-build = { cmd = "pixi exec rattler-build build --recipe recipe.yaml --output-dir output", depends-on = ["build-wheel"] }

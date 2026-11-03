@@ -48,8 +48,7 @@ struct PendingShape {
 
 // --- field helpers ---------------------------------------------------------
 
-/// Rust's `{:?}` on a string: double-quoted with the usual escapes. Enough of it for the ASCII
-/// content of a `.seq` file, so a bad-shape message reads identically from either port.
+/// Quote malformed input, escaping special characters.
 std::string debug_quote(std::string_view s) {
     std::string out = "\"";
     for (const char c : s) {
@@ -77,10 +76,9 @@ std::string debug_quote(std::string_view s) {
     return out;
 }
 
-/// Field `i` as a double, or a `ParseError`. Rust's `pf`, message wording included -- it reaches
-/// Python verbatim, so `tests/test_parser.cpp` pins it.
-double pf(const std::vector<std::string_view>& f, std::size_t i, const char* what,
-          std::size_t line) {
+/// Read a floating-point field or raise a ParseError naming the field and line.
+double float_field(const std::vector<std::string_view>& f, std::size_t i, const char* what,
+                   std::size_t line) {
     double v = 0.0;
     if (i >= f.size() || !parse_f64(f[i], v)) {
         throw ParseError(line, std::string("missing/invalid ") + what);
@@ -88,9 +86,9 @@ double pf(const std::vector<std::string_view>& f, std::size_t i, const char* wha
     return v;
 }
 
-/// Field `i` as a u32, or a `ParseError`. Rust's `pu`.
-std::uint32_t pu(const std::vector<std::string_view>& f, std::size_t i, const char* what,
-                 std::size_t line) {
+/// Read an unsigned field or raise a ParseError naming the field and line.
+std::uint32_t uint_field(const std::vector<std::string_view>& f, std::size_t i, const char* what,
+                         std::size_t line) {
     std::uint32_t v = 0;
     if (i >= f.size() || !parse_u32(f[i], v)) {
         throw ParseError(line, std::string("missing/invalid ") + what);
@@ -107,7 +105,7 @@ void parse_version(std::string_view t, Version& v) {
     }
     std::uint32_t val = 0;
     if (f.size() < 2 || !parse_u32(f[1], val)) {
-        val = 0;  // Rust: unwrap_or(0) -- an unreadable value is not an error here
+        val = 0;
     }
     if (f[0] == "major") {
         v.major = val;
@@ -119,8 +117,7 @@ void parse_version(std::string_view t, Version& v) {
 }
 
 void parse_definition(std::string_view t, std::map<std::string, std::string>& defs) {
-    // Key, then the rest of the line trimmed. A bare key stores an empty value; a repeated key
-    // overwrites, as Rust's HashMap::insert does.
+    // Split the key from its trimmed value; repeated keys overwrite earlier values.
     const std::pair<std::string_view, std::string_view> kv = split_first_space(t);
     defs[std::string(kv.first)] = std::string(kv.second);
 }
@@ -129,10 +126,10 @@ void parse_definition(std::string_view t, std::map<std::string, std::string>& de
 RawBlock parse_block(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
     RawBlock b;
-    b.num = pu(f, 0, "block num", line);
-    b.duration_raster = pf(f, 1, "block duration", line);
+    b.num = uint_field(f, 0, "block num", line);
+    b.duration_raster = float_field(f, 1, "block duration", line);
     for (std::size_t j = 0; j < b.events.size(); ++j) {
-        b.events[j] = pu(f, 2 + j, "block event id", line);
+        b.events[j] = uint_field(f, 2 + j, "block event id", line);
     }
     return b;
 }
@@ -140,20 +137,19 @@ RawBlock parse_block(std::string_view t, std::size_t line) {
 /// `id ampl mag phase time_shape center delay freqPPM phasePPM freq phase use`
 std::pair<std::uint32_t, Rf> parse_rf(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "rf id", line);
+    const std::uint32_t id = uint_field(f, 0, "rf id", line);
     Rf rf;
-    rf.amplitude = pf(f, 1, "rf amplitude", line);
-    rf.mag_shape = pu(f, 2, "rf mag_shape", line);
-    rf.phase_shape = pu(f, 3, "rf phase_shape", line);
-    rf.time_shape = pu(f, 4, "rf time_shape", line);
-    rf.center = pf(f, 5, "rf center", line) * 1e-6;  // us -> s
-    rf.delay = pf(f, 6, "rf delay", line) * 1e-6;
-    rf.freq_ppm = pf(f, 7, "rf freqPPM", line);
-    rf.phase_ppm = pf(f, 8, "rf phasePPM", line);
-    rf.freq = pf(f, 9, "rf freq", line);
-    rf.phase = pf(f, 10, "rf phase", line);
-    // A missing or empty `use` field becomes 'u' -> Undefined, as in Rust. v1.4 files have no
-    // such column, so this is the common case, not an error.
+    rf.amplitude = float_field(f, 1, "rf amplitude", line);
+    rf.mag_shape = uint_field(f, 2, "rf mag_shape", line);
+    rf.phase_shape = uint_field(f, 3, "rf phase_shape", line);
+    rf.time_shape = uint_field(f, 4, "rf time_shape", line);
+    rf.center = float_field(f, 5, "rf center", line) * 1e-6;  // us -> s
+    rf.delay = float_field(f, 6, "rf delay", line) * 1e-6;
+    rf.freq_ppm = float_field(f, 7, "rf freqPPM", line);
+    rf.phase_ppm = float_field(f, 8, "rf phasePPM", line);
+    rf.freq = float_field(f, 9, "rf freq", line);
+    rf.phase = float_field(f, 10, "rf phase", line);
+    // Missing RF use is recorded as Undefined.
     rf.use = rf_use_from_char(f.size() > 11 && !f[11].empty() ? f[11].front() : 'u');
     return {id, rf};
 }
@@ -161,66 +157,66 @@ std::pair<std::uint32_t, Rf> parse_rf(std::string_view t, std::size_t line) {
 /// `id amplitude first last amp_shape time_shape delay`
 std::pair<std::uint32_t, Gradient> parse_grad(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "grad id", line);
+    const std::uint32_t id = uint_field(f, 0, "grad id", line);
     ArbitraryGrad g;
-    g.amplitude = pf(f, 1, "grad amplitude", line);
-    g.first = pf(f, 2, "grad first", line);
-    g.last = pf(f, 3, "grad last", line);
-    g.amp_shape = pu(f, 4, "grad amp_shape", line);
-    g.time_shape = pu(f, 5, "grad time_shape", line);
-    g.delay = pf(f, 6, "grad delay", line) * 1e-6;
+    g.amplitude = float_field(f, 1, "grad amplitude", line);
+    g.first = float_field(f, 2, "grad first", line);
+    g.last = float_field(f, 3, "grad last", line);
+    g.amp_shape = uint_field(f, 4, "grad amp_shape", line);
+    g.time_shape = uint_field(f, 5, "grad time_shape", line);
+    g.delay = float_field(f, 6, "grad delay", line) * 1e-6;
     return {id, Gradient(g)};
 }
 
 /// `id amplitude rise flat fall delay`
 std::pair<std::uint32_t, Gradient> parse_trap(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "trap id", line);
+    const std::uint32_t id = uint_field(f, 0, "trap id", line);
     Trap g;
-    g.amplitude = pf(f, 1, "trap amplitude", line);
-    g.rise = pf(f, 2, "trap rise", line) * 1e-6;
-    g.flat = pf(f, 3, "trap flat", line) * 1e-6;
-    g.fall = pf(f, 4, "trap fall", line) * 1e-6;
-    g.delay = pf(f, 5, "trap delay", line) * 1e-6;
+    g.amplitude = float_field(f, 1, "trap amplitude", line);
+    g.rise = float_field(f, 2, "trap rise", line) * 1e-6;
+    g.flat = float_field(f, 3, "trap flat", line) * 1e-6;
+    g.fall = float_field(f, 4, "trap fall", line) * 1e-6;
+    g.delay = float_field(f, 5, "trap delay", line) * 1e-6;
     return {id, Gradient(g)};
 }
 
 /// `id num dwell delay freqPPM phasePPM freq phase phase_id`
 std::pair<std::uint32_t, Adc> parse_adc(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "adc id", line);
+    const std::uint32_t id = uint_field(f, 0, "adc id", line);
     Adc a;
-    a.num = pu(f, 1, "adc num", line);
-    a.dwell = pf(f, 2, "adc dwell", line) * 1e-9;  // ns -> s
-    a.delay = pf(f, 3, "adc delay", line) * 1e-6;  // us -> s
-    a.freq_ppm = pf(f, 4, "adc freqPPM", line);
-    a.phase_ppm = pf(f, 5, "adc phasePPM", line);
-    a.freq = pf(f, 6, "adc freq", line);
-    a.phase = pf(f, 7, "adc phase", line);
-    a.phase_shape = pu(f, 8, "adc phase_id", line);
+    a.num = uint_field(f, 1, "adc num", line);
+    a.dwell = float_field(f, 2, "adc dwell", line) * 1e-9;  // ns -> s
+    a.delay = float_field(f, 3, "adc delay", line) * 1e-6;  // us -> s
+    a.freq_ppm = float_field(f, 4, "adc freqPPM", line);
+    a.phase_ppm = float_field(f, 5, "adc phasePPM", line);
+    a.freq = float_field(f, 6, "adc freq", line);
+    a.phase = float_field(f, 7, "adc phase", line);
+    a.phase_shape = uint_field(f, 8, "adc phase_id", line);
     return {id, a};
 }
 
 /// `id type ref next_id`
 std::pair<std::uint32_t, ExtNode> parse_ext_node(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "ext id", line);
+    const std::uint32_t id = uint_field(f, 0, "ext id", line);
     ExtNode node;
-    node.type_id = pu(f, 1, "ext type", line);
-    node.ref_id = pu(f, 2, "ext ref", line);
-    node.next_id = pu(f, 3, "ext next_id", line);
+    node.type_id = uint_field(f, 1, "ext type", line);
+    node.ref_id = uint_field(f, 2, "ext ref", line);
+    node.next_id = uint_field(f, 3, "ext next_id", line);
     return {id, node};
 }
 
 /// `id type channel delay duration`
 std::pair<std::uint32_t, Trigger> parse_trigger(std::string_view t, std::size_t line) {
     const std::vector<std::string_view> f = fields(t);
-    const std::uint32_t id = pu(f, 0, "trigger id", line);
+    const std::uint32_t id = uint_field(f, 0, "trigger id", line);
     Trigger trg;
-    trg.trig_type = pu(f, 1, "trigger type", line);
-    trg.channel = pu(f, 2, "trigger channel", line);
-    trg.delay = pf(f, 3, "trigger delay", line) * 1e-6;
-    trg.duration = pf(f, 4, "trigger duration", line) * 1e-6;
+    trg.trig_type = uint_field(f, 1, "trigger type", line);
+    trg.channel = uint_field(f, 2, "trigger channel", line);
+    trg.delay = float_field(f, 3, "trigger delay", line) * 1e-6;
+    trg.duration = float_field(f, 4, "trigger duration", line) * 1e-6;
     return {id, trg};
 }
 
@@ -239,8 +235,7 @@ void finish_shape(std::optional<PendingShape>& cur, std::map<std::uint32_t, Shap
 
 void parse_shape_line(std::string_view t, std::optional<PendingShape>& cur,
                       std::map<std::uint32_t, Shape>& shapes, std::size_t line) {
-    // Note both prefixes are matched without requiring a space, as in Rust: "shape_id 1" and
-    // "shape_id1" are both accepted, and the remainder is trimmed before parsing.
+    // Accept shape_id and num_samples with or without a separating space.
     if (starts_with(t, "shape_id")) {
         finish_shape(cur, shapes);  // close the previous shape
         std::uint32_t id = 0;
@@ -254,7 +249,7 @@ void parse_shape_line(std::string_view t, std::optional<PendingShape>& cur,
             throw ParseError(line, "bad num_samples: " + debug_quote(t));
         }
         if (cur) {
-            cur->num_samples = n;  // outside a shape this is silently dropped, as in Rust
+            cur->num_samples = n;  // ignored outside a shape
         }
     } else {
         double v = 0.0;
@@ -304,7 +299,7 @@ bool section_header(std::string_view t, Sequence& seq, Section& out) {
         const std::string_view name = f.empty() ? std::string_view{} : f[0];
         std::uint32_t type_id = 0;
         if (f.size() < 2 || !parse_u32(f[1], type_id)) {
-            type_id = 0;  // Rust: unwrap_or(0)
+            type_id = 0;
         }
         seq.ext_type_names[type_id] = std::string(name);
         out = name == "TRIGGERS" ? Section::TriggerExt : Section::Other;
@@ -377,13 +372,9 @@ Sequence parse_text(std::string_view text) {
     std::vector<RawBlock> raw_blocks;
     std::optional<PendingShape> cur_shape;
 
-    // 1-based, and it counts blank and comment lines too -- Rust enumerates before skipping them,
-    // so this is what makes an error point at the same line from either port.
+    // Count blank and comment lines in source line numbers.
     std::size_t line = 0;
-    // Split on '\n' in place rather than with std::getline, which allocates and copies a
-    // std::string per line -- on a large sequence that is over a million allocations, and it
-    // dominated the parse. The segmentation matches both getline and Rust's `lines()`: a trailing
-    // newline does not yield a final empty line, and a final line without one still counts.
+    // Walk views into the buffer, avoiding a string allocation per line.
     std::size_t pos = 0;
     while (pos < text.size()) {
         const std::size_t nl = text.find('\n', pos);
@@ -399,7 +390,7 @@ Sequence parse_text(std::string_view text) {
 
         Section next = Section::None;
         if (section_header(t, seq, next)) {
-            // A repeated [SHAPES] header does not close the shape in progress, as in Rust.
+            // A repeated [SHAPES] header leaves the current shape open.
             if (next != Section::Shapes) {
                 finish_shape(cur_shape, seq.shapes);
             }

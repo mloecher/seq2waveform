@@ -1,9 +1,4 @@
-// Error types for the core library.
-//
-// Ported from the Rust `error.rs`, message wording included. That was load-bearing while the
-// oracle existed -- the differential suite compared the exception text from both ports, a cheap
-// end-to-end check that the parse loop stamped the same source line on the same failure. The
-// wording is now just the documented behaviour, and `tests/test_parser.cpp` pins it.
+// Parse errors with source details for callers and Python exceptions.
 
 #pragma once
 
@@ -13,10 +8,7 @@
 
 namespace s2w {
 
-/// A malformed line in a text sequence file, carrying the 1-based source line number.
-///
-/// `what()` is formatted like Rust's `Display` for `Error::Parse`:
-/// `"parse error at line {line}: {message}"`.
+/// A malformed sequence line. what(): "parse error at line {line}: {message}".
 class ParseError : public std::runtime_error {
 public:
     ParseError(std::size_t line, const std::string& message)
@@ -35,9 +27,7 @@ private:
     std::string message_;
 };
 
-/// A malformed Siemens `.dsv` / `.inf` file. `what()` matches Rust's `Error::Dsv` Display:
-/// `"DSV format error: {message}"`. These files carry no line numbers worth reporting -- a bad
-/// value line is quoted in the message instead.
+/// A malformed DSV/INF value. what(): "DSV format error: {message}".
 class DsvError : public std::runtime_error {
 public:
     explicit DsvError(const std::string& message)

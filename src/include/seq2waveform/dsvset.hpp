@@ -1,15 +1,5 @@
-// A Siemens DSP-Simulator measurement set: three gradient channels, the RFD envelope and the INF.
-//
-// The DSV-side analogue of a `Sequence`, in the Siemens frame. It is a `WaveformSource`, so the
-// whole sampling and k-space pipeline runs on it unchanged -- which is the point: it lets a DSV+INF
-// set stand in for a `.seq`, and predict trajectories for sequences that have no `.seq` at all.
-//
-// The gradients, the ADC and the excitations all share the ~1020 us lead-in, so k-space -- an
-// integral *difference* -- comes out right with no lead-in juggling.
-//
-// Ported from the `impl WaveformSource for DsvSet` block in the Rust `dsv.rs`. It lives in its own
-// header rather than in `dsv.hpp` because it needs `sample.hpp` and `inf.hpp`, which the channel
-// reader does not; Rust can keep them in one file, C++ would rather not make `dsv.hpp` heavy.
+// A Siemens measurement set: three gradient channels, an RFD envelope and an INF log.
+// All channels and events use the Siemens time frame, including its lead-in.
 
 #pragma once
 

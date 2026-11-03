@@ -49,14 +49,17 @@ struct PiecewiseLinear {
     /// The k-space building block: k(t) = integral from the excitation to t.
     double integral(Ps t0, Ps t1) const;
 
-    /// Running integral at each corner: cum[i] = integral from t[0] to t[i]. Precompute once,
-    /// then `moment_to` evaluates any time in O(1) -- the k-space fast path.
+    /// Running integral at each corner: cum[i] = integral from t[0] to t[i].
+    /// moment_to uses this table plus a binary search for the query segment.
     std::vector<double> cumulative_moment() const;
 
     /// Integral from t[0] to `at` using precomputed corner moments `cum`. Zero before the corner
     /// range, saturates after it. A k-space value referenced to t_ref is
     /// moment_to(t) - moment_to(t_ref).
     double moment_to(Ps at, const std::vector<double>& cum) const;
+
+    /// Read a caller-owned table without copying it. cum must contain size() corner moments.
+    double moment_to(Ps at, const double* cum) const;
 
     /// `moment_to` over non-decreasing `times`, via one forward cursor -- O(corners + times).
     /// The hot path for k-space over an ADC readout.

@@ -1,14 +1,8 @@
-"""seq2waveform: read Pulseq .seq and DSV files into waveform arrays.
+"""Read Pulseq .seq files and DSV exports into waveform arrays.
 
-``Sequence`` reads a Pulseq ``.seq`` and expands its blocks; ``DsvSet`` reads a measurement's
-``.dsv`` channels plus its ``.inf``. Both answer the same sampling and k-space calls, so a DSV set
-is a drop-in for a ``.seq``.
-
-Times are int64 picoseconds internally, which is what makes a delay sweep bit-exact regardless of
-where in the sequence it lands; values stay float64.
-
-``load`` takes either kind of source and defaults to the gradient representation the two share,
-so code written on top of it does not know which it got. See USAGE.md.
+Sequence and DsvSet share gradient and k-space sampling methods. load() selects
+one from a path and defaults to the DSV gradient representation. Times are stored
+as int64 picoseconds; values are float64. See USAGE.md for examples.
 """
 
 from pathlib import Path
@@ -31,43 +25,20 @@ from ._core import (
     read_inf_sync,
 )
 
-#: The five channels a ``DsvSet`` needs, in the order its constructor takes them. An export
-#: holds many more (ADC, CON, ERR, M0X/Y/Z, ...) that are ignored here.
+# DsvSet constructor order; other exported channels are ignored.
 _DSV_CHANNELS = ("GRX", "GRY", "GRZ", "RFD", "INF")
 
 
 def _dsv_index(directory):
-    """Map ``NAME.DSV`` (upper-cased) -> path, for every ``.dsv`` in one directory.
-
-    Upper-cased because the channel suffix is written in capitals, but a file can arrive from a
-    case-insensitive filesystem, an archive or a rename with any casing at all.
-    """
+    """Index DSV paths by upper-case filename for case-insensitive lookup."""
     return {q.name.upper(): q for q in directory.iterdir()
             if q.is_file() and q.suffix.lower() == ".dsv"}
 
 
 def _dsv_paths(src):
-    """Resolve a DSV export to the five paths ``DsvSet`` takes.
+    """Resolve an export directory or member file to (grx, gry, grz, rfd, inf).
 
-    Parameters
-    ----------
-    src : str or Path
-        A directory holding one export, or any single ``*.dsv`` file belonging to one. Naming a
-        member file is the way to disambiguate a directory that holds several exports.
-
-    Returns
-    -------
-    tuple of str
-        ``(grx, gry, grz, rfd, inf)``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If `src` does not exist, if a directory holds no ``*_GRX.dsv``, or if any one of the five
-        channels is missing -- naming which.
-    ValueError
-        If a directory holds more than one export and no member file was named.
-    """
+    Raise FileNotFoundError for missing channels and ValueError for ambiguous exports."""
     src = Path(src)
     if not src.exists():
         raise FileNotFoundError(f"no such path: {src}")
@@ -86,9 +57,7 @@ def _dsv_paths(src):
 
     index = _dsv_index(directory)
     if prefix is None:
-        # Infer it from the gradient-x channel, which every export has. Taken from the real
-        # filename rather than from the upper-cased lookup key, so the prefix keeps its own
-        # casing -- otherwise it reaches error messages as a filename that does not exist.
+        # Infer the prefix from GRX, preserving filename case in error messages.
         hits = sorted((q for key, q in index.items() if key.endswith("_GRX.DSV")),
                       key=lambda q: q.name)
         if not hits:
@@ -112,47 +81,30 @@ def _dsv_paths(src):
 
 
 def load(src, *, mode=None, gamma=None):
-    """Open a Pulseq ``.seq`` or a DSV export, in the representation they share.
-
-    A ``.seq`` is read with ``gradient_mode="dsv"`` unless told otherwise: that is the mode which
-    matches what a DSV export holds, so the two sources become comparable. Pass ``mode="pulseq"``
-    when the comparison you want is against Pulseq's own ``waveforms_and_times()``.
+    """Open a Pulseq .seq file or DSV export.
 
     Parameters
     ----------
     src : str or Path
-        A ``.seq`` file, a directory holding one DSV export, or any single ``*.dsv`` file
-        belonging to one.
+        A .seq file, a directory containing one export, or a member .dsv file.
     mode : {'dsv', 'pulseq', 'centers'}, optional
-        Gradient mode for a ``.seq``. Defaults to ``'dsv'``. A DSV export is already the
-        commanded waveform, so anything but ``'dsv'`` is rejected rather than ignored.
+        Reconstruction mode for .seq files; defaults to 'dsv'. DSV exports accept
+        only 'dsv'. Use 'pulseq' to match Pulseq's waveforms_and_times().
     gamma : float, optional
-        Gyromagnetic ratio (Hz/T) for a DSV export; defaults to `SCAN_GAMMA`. Rejected for a
-        ``.seq``, which takes its scaling from the file.
+        Gyromagnetic ratio in Hz/T for DSV exports; defaults to SCAN_GAMMA.
+        Rejected for .seq files, whose amplitudes are already in Hz/m.
 
     Returns
     -------
     Sequence or DsvSet
-        Whichever `src` named. The 17 methods they share -- `gradient`, `gradients_dense`,
-        `sampler`, the ``adc_*`` and ``trigger_*`` families, `duration` -- behave the same on
-        both, so callers need not know which they have.
+        A source with gradient and k-space sampling methods.
 
     Raises
     ------
     FileNotFoundError
-        If `src` does not exist, or a DSV export is incomplete.
+        The path or a required DSV channel is missing.
     ValueError
-        If `src` is neither a ``.seq`` nor a DSV export, or an argument does not apply to the
-        source named.
-
-    Examples
-    --------
-    >>> wf = load("scan.seq")                     # doctest: +SKIP
-    >>> wf.gradient_mode                          # doctest: +SKIP
-    'dsv'
-    >>> wf = load("export_dir/")                  # doctest: +SKIP
-    >>> t, gx, gy, gz = wf.gradients_dense(10e-6) # doctest: +SKIP
-    """
+        The source is ambiguous or unsupported, or an argument does not apply."""
     path = Path(src)
     if not path.exists():
         raise FileNotFoundError(f"no such path: {path}")

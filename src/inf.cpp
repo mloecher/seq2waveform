@@ -20,7 +20,7 @@ std::vector<AdcSegment> merge_contiguous(const std::vector<AdcSegment>& segs) {
     for (const AdcSegment& seg : segs) {
         if (!out.empty()) {
             AdcSegment& last = out.back();
-            // `last.dwell()` is read before the merge mutates it, as in Rust.
+            // Read the dwell before updating the merged duration and sample count.
             const double dwell = last.dwell();
             const bool same_dwell =
                 std::fabs(dwell - seg.dwell()) <= 1e-6 * std::fmax(dwell, 1e-12);
@@ -59,9 +59,9 @@ namespace {
 
 /// The first whitespace-separated token of `s` parsed as a double, if it parses.
 std::optional<double> first_f64(std::string_view s) {
-    const std::vector<std::string_view> f = fields(s);
+    const std::string_view first = split_first_space(trim(s)).first;
     double v = 0.0;
-    if (f.empty() || !parse_f64(f[0], v)) {
+    if (!parse_f64(first, v)) {
         return std::nullopt;
     }
     return v;
@@ -95,12 +95,7 @@ std::optional<double> RfEvent::rfd_peak(const DsvChannel& rfd) const {
     }
     const double end = start + duration;
 
-    // Bracket the pulse window by binary search instead of testing every corner. The corners are
-    // sorted and `secs()` is monotonic in the raw count, so these bounds select exactly the
-    // indices `t >= start && t <= end` picked out before -- the same set, bit for bit. Scanning the
-    // whole channel twice per event instead made this quadratic: on `cones` that is 4,236 RF
-    // events over 309,230 RFD corners, 1.3 G iterations and ~1.1 s, paid by every DSV k-space call
-    // because `excitations()` goes through here.
+    // Restrict the peak search to corners inside the RF window.
     const std::size_t lo = static_cast<std::size_t>(
         std::lower_bound(pwl.t.begin(), pwl.t.end(), start,
                          [](Ps corner, double s) { return corner.secs() < s; }) -
@@ -110,7 +105,7 @@ std::optional<double> RfEvent::rfd_peak(const DsvChannel& rfd) const {
                          [](double e, Ps corner) { return e < corner.secs(); }) -
         pwl.t.begin());
 
-    // Rust starts from f64::MIN (the most negative finite), not -infinity.
+    // Start below every finite envelope value.
     double vmax = std::numeric_limits<double>::lowest();
     for (std::size_t i = lo; i < hi; ++i) {
         vmax = std::fmax(vmax, pwl.v[i]);
@@ -177,8 +172,7 @@ std::optional<std::size_t> Inf::col(const std::string& prefix) const {
 }
 
 std::vector<Ps> Inf::adc_sample_times() const {
-    // Count first, reserve once, then append in place -- rather than a vector per segment copied
-    // into a growing output, which allocated per segment and touched every sample twice.
+    // Reserve the total sample count and append segments directly.
     std::size_t total = 0;
     for (const AdcSegment& s : adc) {
         total += s.num_samples;
@@ -264,8 +258,7 @@ std::vector<RfEvent> Inf::rf_events() const {
             if (!parse_f64(parts->first, flip) || !parse_f64(parts->second, dur_us)) {
                 continue;
             }
-            // The LAST Freq/Phase entry at or before this row -- Rust's `filter(..).last()`, so it
-            // relies on row order, not on sorting.
+            // Use the last matching Freq/Phase entry in row order.
             double freq = 0.0;
             double phase = 0.0;
             for (const std::array<double, 3>& e : fps) {
@@ -327,7 +320,7 @@ Inf read_inf_stream(std::istream& in) {
             const std::vector<std::string_view> f = fields(t.substr(14));
             double s = 0.0;
             double d = 0.0;
-            // Only armed when BOTH parse, as in Rust.
+            // Both start and duration must parse before accepting an ADC header.
             pending_adc.reset();
             if (f.size() >= 2 && parse_f64(f[0], s) && parse_f64(f[1], d)) {
                 pending_adc = std::make_pair(s, d);

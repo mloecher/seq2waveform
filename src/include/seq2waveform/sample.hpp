@@ -1,19 +1,7 @@
-// Sample gradient waveforms or k-space at measurement points.
-//
-// A Sampler (precomputed gradients + cumulative moments) evaluates values, or k-space given a
-// `reference` time to integrate from. It is decoupled from *where* the points come from:
-// SampleSpec helpers build `(times, reference)` per case -- ADC (ref = the preceding excitation),
-// trigger/Skope (ref = the trigger itself), or arbitrary (the caller supplies both).
-//
-// k-space is the integral of G dt in 1/m **directly**: gamma is already baked into the Hz/m
-// gradients. Multiplying by it again is the easiest way to be wrong by a factor of 42.6 million.
-//
-// Ported from the Rust `sample.rs`. Rust's `WaveformSource` is a trait with default methods
-// implemented *for* `Sequence`; here it is an abstract base class whose non-virtual helpers are
-// written in terms of five pure-virtual primitives, and `SequenceSource` is the adapter that makes
-// a parsed `Sequence` one. Keeping `Sequence` a plain aggregate is deliberate -- it is parsed data,
-// not a polymorphic object -- and `DsvSet` becomes a second subclass at port step 7, at which
-// point the whole pipeline runs on either source.
+// Sample gradients (Hz/m) or their time integral, k-space (1/m).
+// Sampler holds the waveforms and cumulative moments; SampleSpec supplies query times
+// and an integration reference. Gamma is already included in the gradient values.
+// SequenceSource and DsvSet share the WaveformSource sampling helpers.
 
 #pragma once
 
@@ -116,12 +104,7 @@ public:
     /// (Siemens frame, which includes the ~1020 us lead-in).
     virtual double duration() const = 0;
 
-    /// The first sample time of each ADC event -- all the excitation matching needs.
-    ///
-    /// Not one of the primitives: the default builds it from `adc_events()`, so a new source works
-    /// without supplying it. Both sources do override it, because the starts are available without
-    /// the samples, and on a long readout that is the difference between one number per event and
-    /// one per sample (4,216 against 21.5 M on `cones`).
+    /// Event starts for excitation matching; overrides avoid building every ADC sample.
     virtual std::vector<Ps> adc_event_starts() const;
 
     // --- shared helpers --------------------------------------------------
@@ -137,9 +120,7 @@ public:
     /// `adc_kspace` and `adc_specs`, so it zips directly against them.
     std::vector<std::tuple<double, double, double>> adc_excitations() const;
 
-    /// Sample specs at the ADC samples -- one per ADC event, reference = the most recent
-    /// excitation before it. Warns on stderr when the excitation and ADC counts disagree (fat-sat,
-    /// for instance), which is how a mismatched sequence announces itself.
+    /// ADC sample grids, referenced to the preceding excitation. Warns on count mismatches.
     std::vector<SampleSpec> adc_specs() const;
 
     /// Sample specs for trigger-based (Skope) measurements: per trigger, `n` samples at `dt` after
@@ -166,7 +147,7 @@ public:
                                                                        double raster) const;
 };
 
-/// Makes a parsed Sequence a WaveformSource -- Rust's `impl WaveformSource for Sequence`.
+/// Adapt parsed sequence data to the shared sampling interface.
 class SequenceSource : public WaveformSource {
 public:
     explicit SequenceSource(Sequence seq) : seq_(std::move(seq)) {}

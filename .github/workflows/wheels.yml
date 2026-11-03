@@ -1,22 +1,10 @@
-# CPython 3.10-3.14 plus 3.14 free-threaded, on Linux x86_64, macOS (both arches) and Windows x64.
-# See [tool.cibuildwheel] in pyproject.toml for the selection and the per-arch macOS targets.
-#
-# Not on every push: six builds per platform, tens of minutes, and ci.yml already catches a
-# toolchain break in a few. Run it from the Actions tab when the matrix itself is the question, and
-# on a release tag. Both macOS arches build natively, one runner each, so cibuildwheel's
-# test-command runs for both (macos-15-intel is the current Intel label; macos-13 is retired).
-# ubuntu-24.04-arm and windows-11-arm would add the remaining native runners.
-
+# Build on release tags or manual dispatch; publish only for a published release.
 name: Wheels
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
-  # Publishing hangs off this, not off the tag: a tag builds the matrix so it can be looked at,
-  # and the upload stays a separate act. Note that a release published on an existing tag shares
-  # its ref, so the concurrency group below cancels the tag's own run -- which is what you want,
-  # since the release run rebuilds everything it is about to upload.
   release:
     types: [published]
   pull_request:
@@ -33,8 +21,6 @@ env:
 
 jobs:
   version:
-    # The build triggers on a v* tag but takes its version from pyproject.toml, so tagging v0.2.0
-    # without bumping the file would produce a whole matrix labelled 0.1.0.
     name: tag matches pyproject
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -61,9 +47,8 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # always() keeps the matrix going when `version` is skipped off-tag, but still stops on a
-    # real mismatch.
     needs: [version]
+    # A skipped version check is expected off-tag; a mismatch must stop the build.
     if: always() && needs.version.result != 'failure'
     permissions:
       contents: read
@@ -75,7 +60,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # Pinned to a patch: a bump changes which interpreters and platform tags come out.
       - uses: pypa/cibuildwheel@v4.3.5
       - name: The build must not have written into the source tree
         run: git diff --exit-code
@@ -106,13 +90,11 @@ jobs:
           path: wheelhouse/*.whl
 
   sdist:
-    # PyPI wants the source distribution as well: it is what builds on a platform the matrix above
-    # has no wheel for. ci.yml also builds one, on every push, with the stricter checks on what it
-    # contains -- but artifacts do not cross workflows, so the release path builds its own.
     name: sdist
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [version]
+    # A skipped version check is expected off-tag; a mismatch must stop the build.
     if: always() && needs.version.result != 'failure'
     permissions:
       contents: read
@@ -123,8 +105,6 @@ jobs:
       - name: Build
         run: pipx run build --sdist
       - name: Check the metadata
-        # readme_renderer, the same renderer PyPI uses, so a long description that will not render
-        # fails here rather than landing on a page nobody can fix.
         run: pipx run twine check dist/*
       - uses: actions/upload-artifact@v7
         with:
@@ -132,20 +112,12 @@ jobs:
           path: dist/*.tar.gz
 
   publish:
-    # Trusted publishing: PyPI authenticates this workflow over OIDC, so there is no token here
-    # and none in the repository's secrets. It requires a publisher on PyPI naming this repo, this
-    # file (`wheels.yml`) and the `pypi` environment below -- change any of the three and the
-    # upload is rejected.
-    #
-    # The one step in either workflow that cannot be undone: a PyPI version is immutable, and its
-    # filenames can never be reused even after a delete. Hence the release gate, and hence taking
-    # the collected artifact rather than rebuilding -- these are the files the matrix already
-    # produced and reported on.
     name: publish to PyPI
     needs: [collect, sdist]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # PyPI trusted publishing must name this workflow and environment.
     environment:
       name: pypi
       url: https://pypi.org/p/seq2waveform

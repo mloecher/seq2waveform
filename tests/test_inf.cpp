@@ -1,17 +1,4 @@
-// Core tests for the Siemens INF reader, ported one-for-one from the Rust unit tests in
-// crates/seq2waveform/src/dsv/inf.rs, with SAMPLE_INF included verbatim.
-//
-// Two things here are easy to get subtly wrong and expensive to notice later:
-//
-// * The MaxAdcSegmentLength merge. Siemens splits a long readout into chunks; merging consecutive
-//   same-dwell contiguous chunks restores the logical ADC that matches the `.seq`. The test
-//   asserts the merged sample times equal the concatenation of the originals, which is the claim
-//   that the merge is exact rather than merely plausible.
-// * The RF center. A symmetric pulse's center is the window middle, exactly; an asymmetric one's
-//   is the sub-raster RFD peak. Getting that backwards shifts every k-space reference by up to
-//   half a pulse.
-//
-// No test framework on purpose: one translation unit, plain checks, non-zero exit on failure.
+// Tests for INF event parsing, contiguous ADC merging and RF center estimates.
 
 #include <cmath>
 #include <cstdio>
@@ -108,8 +95,7 @@ void merges_contiguous_adc_segments_into_logical_events() {
 }
 
 void a_dwell_change_starts_a_new_event() {
-    // No Rust counterpart. Contiguity alone must not merge: two readouts that abut but sample at
-    // different rates are different events, and merging them would silently resample one.
+    // Contiguous segments with different dwells must remain separate.
     const s2w::AdcSegment a = seg(0.0, 100, 2e-6);
     const s2w::AdcSegment b = seg(200e-6, 100, 4e-6);  // abuts a, but twice the dwell
     const std::vector<s2w::AdcSegment> merged = s2w::detail::merge_contiguous({a, b});
@@ -175,7 +161,7 @@ void rf_center_uses_peak_for_asymmetric() {
 }
 
 void split_cell_grammar() {
-    // No Rust counterpart; this is the whole table-cell grammar in one place.
+    // Accepted table-cell forms.
     const auto a = s2w::detail::split_cell("[sX]: 130.8/6000");
     check(a.has_value() && a->first == "130.8" && a->second == "6000", "label prefix is stripped");
     const auto b = s2w::detail::split_cell(" 42 / 7 ");

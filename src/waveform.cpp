@@ -17,11 +17,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-/// Walk the blocks, calling `fn(start, block)` with each block's absolute start time.
-///
-/// The single place block durations accumulate -- every expansion below goes through it, which is
-/// what keeps their time bases identical. Rust spells it as an iterator; the accumulation is the
-/// same, including that `Ps::from_secs` rounds each duration before it is added.
+/// Visit blocks with absolute start times, rounding each duration before adding it.
 template <typename F>
 void walk(const Sequence& seq, F&& fn) {
     Ps t = Ps::zero();
@@ -45,8 +41,7 @@ std::size_t count_events(const Sequence& seq, F&& pick) {
     return n;
 }
 
-/// The decompressed samples of shape `id`, or empty when absent -- Rust's
-/// `shapes.get(&id).map(decompressed).unwrap_or_default()`.
+/// Decompress a shape, or return an empty vector when the id is absent.
 std::vector<double> shape_or_empty(const Sequence& seq, std::uint32_t id) {
     const auto it = seq.shapes.find(id);
     return it == seq.shapes.end() ? std::vector<double>{} : it->second.decompressed();
@@ -70,7 +65,7 @@ std::pair<std::vector<double>, std::vector<double>> restore_additional_shape_sam
     const std::size_t n = waveform.size();
     double max_abs = 0.0;
     for (const double x : waveform) {
-        // std::fmax, like Rust's f64::max, returns the non-NaN operand.
+        // fmax returns the non-NaN operand.
         max_abs = std::fmax(max_abs, std::fabs(x));
     }
 
@@ -251,9 +246,7 @@ PiecewiseLinear stitch(std::vector<PiecewiseLinear> pieces, double grad_raster) 
     std::vector<Ps> t;
     std::vector<double> v;
 
-    // One allocation each, from the exact total. Growing instead would recopy the whole output
-    // every 1.5x (MSVC's growth factor) -- tens of MB of memcpy on a long sequence. The slack is
-    // for the forced ramps, which add at most two corners per piece boundary.
+    // Reserve for all pieces plus up to two gap-ramp corners per boundary.
     std::size_t total = 2 * pieces.size();
     for (const PiecewiseLinear& piece : pieces) {
         total += piece.t.size();
@@ -317,8 +310,7 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
                       PiecewiseLinear& out) {
     if (const Trap* tr = std::get_if<Trap>(&g)) {
         const Ps off = curr_dur + Ps::from_secs(tr->delay);
-        // The sums are formed in f64 before conversion, exactly as in Rust: from_secs(rise + flat)
-        // is not from_secs(rise) + from_secs(flat).
+        // Sum durations before rounding; rounding each term can give a different result.
         if (std::fabs(tr->flat) > std::numeric_limits<double>::epsilon()) {
             out.t = {off, off + Ps::from_secs(tr->rise), off + Ps::from_secs(tr->rise + tr->flat),
                      off + Ps::from_secs(tr->rise + tr->flat + tr->fall)};
@@ -334,12 +326,7 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
         return false;  // empty gradient
     }
 
-    // `get_if` rather than `get`, which is the only call in the library that could throw
-    // `bad_variant_access`. That exception's `what()` lives in the platform's libc++ dylib on
-    // macOS, so the throwing form is availability-annotated and a deployment target below 10.14
-    // either fails to compile or aborts instead of throwing. Nothing here needs it: the variant
-    // has two alternatives and the `Trap` one returned above, so the null branch is unreachable
-    // and `false` -- "this event contributes nothing" -- is the right answer if it ever is not.
+    // Use get_if to avoid bad_variant_access availability requirements on older macOS.
     const ArbitraryGrad* arb = std::get_if<ArbitraryGrad>(&g);
     if (arb == nullptr) {
         return false;
@@ -347,7 +334,7 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
     const ArbitraryGrad& a = *arb;
     const auto amp_it = seq.shapes.find(a.amp_shape);
     if (amp_it == seq.shapes.end()) {
-        return false;  // Rust's `?` on the shape lookup
+        return false;
     }
     const std::vector<double> shape = amp_it->second.decompressed();
     const std::size_t n = shape.size();
@@ -359,7 +346,7 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
         waveform[k] = a.amplitude * shape[k];
     }
 
-    // Build the time vector and the shape duration (port of getBlock).
+    // Build sample times and shape duration.
     std::vector<double> tt;
     double shape_dur = 0.0;
     if (a.time_shape == 0) {
@@ -375,8 +362,7 @@ bool build_grad_piece(const Sequence& seq, const Gradient& g, Ps curr_dur, doubl
             tt[k] = ts[k] * grad_raster;
         }
         shape_dur = tt.empty() ? 0.0 : tt.back();
-        // Rust indexes tt[k] for k < n below and would panic on a short time shape. Throwing is
-        // the same failure, with a message instead of undefined behaviour here.
+        // Time and amplitude samples must correspond one to one.
         if (tt.size() != n) {
             throw std::runtime_error("gradient time shape " + std::to_string(a.time_shape) +
                                      " has " + std::to_string(tt.size()) +
@@ -466,8 +452,7 @@ void push_grad(const Sequence& seq, std::uint32_t id, Ps curr_dur, double grad_r
 /// Stitch the per-block pieces into one channel, then apply the gradient mode's final pass.
 PiecewiseLinear finish_channel(const Sequence& seq, std::vector<PiecewiseLinear> pieces,
                                double grad_raster) {
-    // Deliberately not `const`: a const local cannot be implicitly moved on return, so `return
-    // pwl` would deep-copy both corner arrays -- 43 MB per call on `cones`.
+    // Keep the result movable when no resampling is needed.
     PiecewiseLinear pwl = stitch(std::move(pieces), grad_raster);
     if (seq.grad_mode == GradMode::Dsv) {
         return resample_at_centers(pwl, grad_raster);
@@ -509,8 +494,7 @@ RfPulse build_rf(const Sequence& seq, const Rf& rf, Ps curr_dur, double rf_raste
     return p;
 }
 
-/// Walk one block's extension list, collecting TRIGGERS entries. The node count is capped, as in
-/// Rust, so a self-referential `next_id` cannot loop forever.
+/// Collect triggers from a block extension list, capping traversal to stop cycles.
 void resolve_triggers(const Sequence& seq, std::uint32_t ext_start, Ps curr_dur,
                       std::vector<TriggerEvent>& out) {
     std::uint32_t node_id = ext_start;
@@ -613,10 +597,7 @@ PiecewiseLinear gradient(const Sequence& seq, char axis) {
 }
 
 std::vector<Ps> adc_times(const Sequence& seq) {
-    // Count first, then reserve once. Reserving per block instead -- reserve(size() + num) inside
-    // the walk -- asks for the exact new size every time, which defeats the geometric growth
-    // push_back gives for free and recopies the whole array on every ADC event. On `cones` (4216
-    // events, 21.5 M samples) that was 47 s of pure memcpy; this is ~60 ms.
+    // Count all samples first; reserving per block would repeatedly copy the growing array.
     std::size_t total = 0;
     for (const Block& b : seq.blocks) {
         if (b.adc == 0) {

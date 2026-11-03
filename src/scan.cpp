@@ -9,21 +9,16 @@
 namespace s2w {
 namespace {
 
-/// The ASCII subset of Rust's `char::is_whitespace`.
+/// ASCII whitespace used by the file formats.
 constexpr bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
-/// Parse the whole of `s` as an integer, Rust-style: a leading '+' is allowed, trailing characters
-/// are not, and an out-of-range value fails.
-///
-/// Integer `from_chars` is present in every standard library we build against (libc++ since LLVM
-/// 7); it is only the floating-point overload that is recent, which is why `parse_f64` below does
-/// not use it.
+/// Parse a whole integer token, accepting a leading + and rejecting overflow.
 template <typename T>
 bool parse_whole_int(std::string_view s, T& out) {
     if (!s.empty() && s.front() == '+') {
-        s.remove_prefix(1);  // from_chars rejects it, Rust's parse() does not
+        s.remove_prefix(1);
     }
     const char* end = s.data() + s.size();
     T value{};
@@ -83,14 +78,12 @@ std::pair<std::string_view, std::string_view> split_first_space(std::string_view
 
 bool parse_f64(std::string_view s, double& out) {
     if (!s.empty() && s.front() == '+') {
-        s.remove_prefix(1);  // fast_float forbids it, as std::from_chars does; Rust accepts it
+        s.remove_prefix(1);
     }
     const char* end = s.data() + s.size();
     double value = 0.0;
     const fast_float::from_chars_result r = fast_float::from_chars(s.data(), end, value);
-    // `result_out_of_range` is not treated as a failure: fast_float has already saturated `value`
-    // to +/-inf or +/-0, which is exactly what Rust's parse() returns for "1e999" / "1e-999".
-    // Accepting it is what makes the two readers agree on every input rather than most of them.
+    // fast_float supplies signed infinity on overflow and signed zero on underflow.
     if ((r.ec != std::errc() && r.ec != std::errc::result_out_of_range) || r.ptr != end) {
         return false;  // empty, malformed, or trailing characters
     }
@@ -112,7 +105,7 @@ bool parse_i64(std::string_view s, std::int64_t& out) {
 
 std::int64_t saturating_i64(double x) {
     if (std::isnan(x)) {
-        return 0;  // Rust's float-to-int cast maps NaN to 0
+        return 0;
     }
     // 2^63 is exactly representable, and is the first double above the int64 range.
     constexpr double kLimit = 9223372036854775808.0;

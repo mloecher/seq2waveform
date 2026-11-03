@@ -4,16 +4,15 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace s2w {
 namespace {
 
-/// Whether `times` is non-decreasing -- a cheap single pass that selects the fast sweep path.
-/// `std::is_sorted`'s default predicate is `<`, so it accepts equal neighbours, matching Rust's
-/// `windows(2).all(|w| w[0] <= w[1])` (and its `true` for fewer than two elements).
+/// Select the forward sweep when query times are non-decreasing.
 bool is_sorted_asc(const Ps* times, std::size_t count) {
-    return std::is_sorted(times, times + count);
+    return count < 2 || std::is_sorted(times, times + count);
 }
 
 /// Most recent excitation at or before `t`, or a sentinel far before the start -- which makes
@@ -22,6 +21,13 @@ Ps excite_before(const std::vector<Ps>& excites, Ps t) {
     const std::size_t i = static_cast<std::size_t>(
         std::upper_bound(excites.begin(), excites.end(), t) - excites.begin());
     return i == 0 ? Ps(std::numeric_limits<std::int64_t>::min()) : excites[i - 1];
+}
+
+FlatTrace sample_kspace_flat(const Sampler& sampler, const std::vector<SampleSpec>& specs) {
+    auto [times, offsets, references] = flatten_specs(specs);
+    FlatK k = sampler.kspace_flat(times, offsets, references);
+    return {std::move(times), std::move(k.kx), std::move(k.ky), std::move(k.kz),
+            std::move(offsets)};
 }
 
 }  // namespace
@@ -72,6 +78,12 @@ Trace Sampler::kspace(const std::vector<Ps>& times, Ps reference) const {
 FlatK Sampler::kspace_flat(const std::vector<Ps>& times, const std::vector<std::size_t>& offsets,
                            const std::vector<Ps>& references) const {
     const std::size_t n = times.size();
+    if (offsets.size() != references.size() + 1 || offsets.front() != 0 ||
+        offsets.back() != n || !std::is_sorted(offsets.begin(), offsets.end())) {
+        throw std::invalid_argument(
+            "offsets must start at 0, be non-decreasing, end at len(times), and have "
+            "len(references) + 1 entries");
+    }
     std::array<std::vector<double>, 3> out = {std::vector<double>(n, 0.0),
                                               std::vector<double>(n, 0.0),
                                               std::vector<double>(n, 0.0)};
@@ -79,15 +91,16 @@ FlatK Sampler::kspace_flat(const std::vector<Ps>& times, const std::vector<std::
         const std::size_t a = offsets[e];
         const std::size_t b = offsets[e + 1];
         const std::size_t len = b - a;
+        if (len == 0) {
+            continue;
+        }
         // The segment is addressed in place; the pointer-range overloads exist so a batched run
         // does not copy every event's times out of the flat array.
         const Ps* seg = times.data() + a;
         const bool sorted = is_sorted_asc(seg, len);
         for (std::size_t axis = 0; axis < 3; ++axis) {
             const double m0 = g_[axis].moment_to(references[e], cum_[axis]);
-            // Straight into this event's slice of the result. Going via a per-event temporary
-            // instead cost one 40 KB allocation per event per axis and a second pass to copy the
-            // values out -- on `cones`, 12,648 allocations and 64 M redundant element copies.
+            // Write into the event slice without a per-event result allocation.
             double* dst = out[axis].data() + a;
             if (sorted) {
                 g_[axis].moments_at_sorted_into(seg, len, cum_[axis], dst);
@@ -145,8 +158,7 @@ std::vector<std::tuple<double, double, double>> WaveformSource::adc_excitations(
         centers.push_back(std::get<0>(e));
     }
 
-    // Only the event *starts*: this used to call `adc_events()` and read the first time of each,
-    // building every sample time in the run to use 4,216 of them.
+    // Matching needs event starts, not the full ADC sample grid.
     const std::vector<Ps> starts = adc_event_starts();
     std::vector<std::tuple<double, double, double>> out;
     out.reserve(starts.size());
@@ -248,27 +260,11 @@ std::vector<Trace> WaveformSource::trigger_kspace(double delay, double dt, std::
 }
 
 FlatTrace WaveformSource::adc_kspace_flat() const {
-    auto flat = flatten_specs(adc_specs());
-    const FlatK k = sampler().kspace_flat(std::get<0>(flat), std::get<1>(flat), std::get<2>(flat));
-    FlatTrace out;
-    out.t = std::move(std::get<0>(flat));
-    out.offsets = std::move(std::get<1>(flat));
-    out.kx = std::move(k.kx);
-    out.ky = std::move(k.ky);
-    out.kz = std::move(k.kz);
-    return out;
+    return sample_kspace_flat(sampler(), adc_specs());
 }
 
 FlatTrace WaveformSource::trigger_kspace_flat(double delay, double dt, std::size_t n) const {
-    auto flat = flatten_specs(trigger_specs(delay, dt, n));
-    const FlatK k = sampler().kspace_flat(std::get<0>(flat), std::get<1>(flat), std::get<2>(flat));
-    FlatTrace out;
-    out.t = std::move(std::get<0>(flat));
-    out.offsets = std::move(std::get<1>(flat));
-    out.kx = std::move(k.kx);
-    out.ky = std::move(k.ky);
-    out.kz = std::move(k.kz);
-    return out;
+    return sample_kspace_flat(sampler(), trigger_specs(delay, dt, n));
 }
 
 Trace WaveformSource::gradients_dense(double raster) const {
@@ -303,7 +299,7 @@ std::vector<TriggerEvent> SequenceSource::trigger_events() const {
 }
 
 double SequenceSource::duration() const {
-    // The summed block durations, in block order, so the f64 accumulation matches Rust's `sum()`.
+    // Sum in block order to preserve floating-point rounding.
     double total = 0.0;
     for (const Block& b : seq_.blocks) {
         total += b.duration;
@@ -318,8 +314,7 @@ std::vector<std::tuple<Ps, double, double>> SequenceSource::excitations() const 
             out.emplace_back(r.center, r.freq, r.phase);
         }
     }
-    // Sort by center only, and stably, so pulses sharing a center keep block order -- Rust's
-    // `sort_by_key(|x| x.0)` is a stable sort on the same key.
+    // Preserve block order for pulses with the same center.
     std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
         return std::get<0>(a) < std::get<0>(b);
     });
@@ -348,8 +343,7 @@ std::tuple<std::vector<Ps>, std::vector<std::size_t>, std::vector<Ps>> flatten_s
     std::vector<Ps> refs;
     refs.reserve(specs.size());
     offsets.reserve(specs.size() + 1);
-    // Size the flat array from the exact total: appending 4000-odd events into a growing vector
-    // recopies the whole run every 1.5x, which on `cones` is 21.5 M elements moved repeatedly.
+    // Reserve the total size once before appending events.
     std::size_t total = 0;
     for (const SampleSpec& sp : specs) {
         total += sp.times.size();
