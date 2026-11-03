@@ -1,6 +1,6 @@
 # Wrap the wheel from pixi run build-wheel into a local conda package.
 context:
-  version: "0.1.0"
+  version: "0.1.1"
 
 package:
   name: seq2waveform
